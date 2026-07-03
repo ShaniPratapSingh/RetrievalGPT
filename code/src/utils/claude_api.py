@@ -2,11 +2,25 @@ import json
 import boto3
 import time
 
-with open('./aws_access.key', 'r') as f:
-    AWS_ACCESS_KEY_ID = f.read().strip()
+import os
+from dotenv import load_dotenv
+load_dotenv()
 
-with open('./claude_api_aws.key', 'r') as f:
-    AWS_SECRET_ACCESS_KEY = f.read().strip()
+AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
+if not AWS_ACCESS_KEY_ID:
+    try:
+        with open('./aws_access.key', 'r') as f:
+            AWS_ACCESS_KEY_ID = f.read().strip()
+    except FileNotFoundError:
+        AWS_ACCESS_KEY_ID = "MOCK_AWS_ACCESS_KEY"
+
+AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
+if not AWS_SECRET_ACCESS_KEY:
+    try:
+        with open('./claude_api_aws.key', 'r') as f:
+            AWS_SECRET_ACCESS_KEY = f.read().strip()
+    except FileNotFoundError:
+        AWS_SECRET_ACCESS_KEY = "MOCK_AWS_SECRET_KEY"
 
 AWS_DEFAULT_REGION = "us-west-2"
 

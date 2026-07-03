@@ -1,14 +1,28 @@
 import os
 from openai import OpenAI
 import pdb
-with open('./openai_api_azure.key', 'r') as f:
-    api_key = f.read().strip()
-    
-    
-os.environ["OPENAI_API_TYPE"] = "azure"
-os.environ["AZURE_OPENAI_ENDPOINT"] = "https://zifeng-gpt-2.openai.azure.com/"
-os.environ["AZURE_OPENAI_API_KEY"] = api_key
-os.environ["OPENAI_API_VERSION"] = "2023-03-15-preview"
+from dotenv import load_dotenv
+load_dotenv()
+
+api_key = os.getenv("AZURE_OPENAI_API_KEY")
+if not api_key:
+    try:
+        with open('./openai_api_azure.key', 'r') as f:
+            api_key = f.read().strip()
+    except FileNotFoundError:
+        api_key = None
+
+if api_key:
+    os.environ["AZURE_OPENAI_API_KEY"] = api_key
+
+if "OPENAI_API_TYPE" not in os.environ:
+    os.environ["OPENAI_API_TYPE"] = "azure"
+
+if "AZURE_OPENAI_ENDPOINT" not in os.environ:
+    os.environ["AZURE_OPENAI_ENDPOINT"] = os.getenv("AZURE_OPENAI_ENDPOINT", "https://zifeng-gpt-2.openai.azure.com/")
+
+if "OPENAI_API_VERSION" not in os.environ:
+    os.environ["OPENAI_API_VERSION"] = os.getenv("OPENAI_API_VERSION", "2023-03-15-preview")
 
 from langchain_openai import AzureChatOpenAI
 from langchain_community.callbacks import get_openai_callback

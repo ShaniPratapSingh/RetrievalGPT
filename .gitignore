@@ -42,3 +42,6 @@ code/extra
 
 # other
 *.key
+
+# credentials
+.env
