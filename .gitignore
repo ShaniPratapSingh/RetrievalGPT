@@ -45,3 +45,8 @@ code/extra
 
 # credentials
 .env
+
+# cache and db
+chroma_db/
+cache/
+

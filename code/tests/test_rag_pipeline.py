@@ -18,6 +18,9 @@ class TestRAGEngine(unittest.TestCase):
     def setUp(self):
         # Initialize RAG Engine (defaults to local embeddings)
         self.engine = RAGEngine()
+        self.engine.storage.clear_database()
+        self.engine.sync_local_lists()
+        self.engine.retriever.rebuild_sparse_index()
         
         # Create a temporary file with mock document contents
         self.temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".txt")

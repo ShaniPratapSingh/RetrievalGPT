@@ -1,0 +1,67 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: retrieval-gpt-deployment
+  labels:
+    app: retrieval-gpt
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: retrieval-gpt
+  template:
+    metadata:
+      labels:
+        app: retrieval-gpt
+    spec:
+      containers:
+      - name: app
+        image: shani-pratap-singh/retrieval-gpt:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8501
+        env:
+        - name: REDIS_HOST
+          value: "redis-service"
+        - name: REDIS_PORT
+          value: "6379"
+        - name: GOOGLE_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: api-secrets
+              key: google-api-key
+        - name: GROQ_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: api-secrets
+              key: groq-api-key
+        resources:
+          limits:
+            cpu: "2"
+            memory: 4Gi
+          requests:
+            cpu: "500m"
+            memory: 2Gi
+        volumeMounts:
+        - name: db-volume
+          mountPath: /app/chroma_db
+        - name: cache-volume
+          mountPath: /app/cache
+      volumes:
+      - name: db-volume
+        persistentVolumeClaim:
+          claimName: chroma-db-pvc
+      - name: cache-volume
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: retrieval-gpt-service
+spec:
+  type: LoadBalancer
+  selector:
+    app: retrieval-gpt
+  ports:
+  - port: 80
+    targetPort: 8501

@@ -1,214 +1,113 @@
-# 🚀 DeepRetrieval-Gemini
+# 🚀 RetrievalGPT - Enterprise Agentic Hybrid RAG Platform
 
-> Enhanced version of DeepRetrieval with Gemini API integration for intelligent query rewriting and retrieval optimization.
+RetrievalGPT is a production-grade, enterprise-level Retrieval-Augmented Generation (RAG) platform built with agentic query understanding, hybrid search capabilities, persistent storage, and rigorous guardrails.
 
-![Python](https://img.shields.io/badge/Python-3.9+-blue.svg)
-![Gemini](https://img.shields.io/badge/Google-Gemini-orange.svg)
-![License](https://img.shields.io/badge/License-MIT-green.svg)
+---
 
-## 📖 Overview
+## 🏗️ Architecture & Features
 
-DeepRetrieval-Gemini is a modernized implementation of the DeepRetrieval framework that replaces the original vLLM-based deployment with Google's Gemini API for lightweight, cross-platform query rewriting.
-
-The project generates optimized Boolean search queries from natural language questions, improving retrieval quality for search engines, document collections, and RAG pipelines.
-
-### Example
-
-**Input Query**
+RetrievalGPT features a modular, performant, and secure pipeline:
 
 ```text
-What is artificial intelligence?
+User Query ──> [Guardrails: Sanitization & Jailbreak Block]
+                    │
+                    ▼
+          [Agentic Query Analyzer] ──> Classifies query (factual, summarization, comparative, etc.)
+                    │
+                    ▼
+          [Hybrid Retriever] 
+          ├── Dense Retrieval: Persistent ChromaDB + local embeddings (all-MiniLM-L6-v2)
+          └── Sparse Retrieval: BM25 (rank-bm25)
+                    │
+                    ▼
+          [Reciprocal Rank Fusion - RRF] ──> Merges dense & sparse results
+                    │
+                    ▼
+          [Cross-Encoder Re-ranking] ──> MS-MARCO model (optional, lazy loaded)
+                    │
+                    ▼
+          [Context Compression] ──> Deduplicates overlapping snippets
+                    │
+                    ▼
+          [Groundedness Guardrails] ──> Run LLM self-consistency check for hallucinations
+                    │
+                    ▼
+     ┌──────────────┴──────────────┐
+     ▼                             ▼
+[High Confidence]           [Low Confidence / Out-of-Domain]
+     │                             │
+[Source Citation Engine]    [Web Search Fallback]
+     │                       ├── Tavily API
+     │                       └── Serper API
+     ▼                             ▼
+[Clean Response + Cited Highlights] <─── [Merged context answer]
 ```
 
-**Generated Query**
-
-```text
-("artificial intelligence" OR AI) AND ("machine learning" OR ML)
-```
-
----
-
-## ✨ Features
-
-* 🔍 Intelligent query rewriting
-* 🤖 Powered by Gemini API
-* ⚡ Fast response generation
-* 💻 Works on macOS, Windows, and Linux
-* 🔗 Easy integration with retrieval pipelines
-* 📚 Optimized Boolean query generation
-* 🚀 Lightweight deployment without local LLM hosting
+* **Advanced Hybrid Retrieval**: Combines semantic vector similarity (ChromaDB) with lexical relevance (BM25) fused via Reciprocal Rank Fusion (RRF) and re-ranked with Cross-Encoder models.
+* **Agentic Query Classification**: Automatically analyzes query intent (factual, comparison, etc.) to customize retrieval depth, chunk constraints, and fallback strategies.
+* **Citation Grounding Engine**: Sentence-level claims are mapped to source documents, page numbers, and chunk IDs to generate clickable, highlighted evidence.
+* **Hallucination Detection Guardrails**: Evaluates answer groundedness against context before returning, blocking fabricated claims.
+* **Redis Caching & Persistence**: Optional local/remote Redis integration to persist conversational history and cache embeddings and LLM completions.
+* **Multimodal OCR Ingestion**: Supports PDF, DOCX, Markdown, HTML, TXT, and OCR text extraction from image formats (`.png`, `.jpg`, `.jpeg`).
 
 ---
 
-## 🏗️ Project Structure
+## ⚙️ Environment Configuration
 
-```text
-DeepRetrieval/
-│
-├── query_rewrite.py
-├── code/
-├── images/
-├── README.md
-├── LICENSE
-└── vllm_host.sh
-```
-
----
-
-## 🛠️ Tech Stack
-
-* Python 3.9+
-* Google Gemini API
-* Requests
-* JSON
-* BM25 Query Rewriting
-* Information Retrieval
-
----
-
-## ⚙️ Installation
-
-### Clone Repository
-
+Copy the example environment file and add your credentials:
 ```bash
-git clone https://github.com/YOUR_USERNAME/DeepRetrieval-Gemini.git
-
-cd DeepRetrieval-Gemini
+cp .env.example .env
 ```
 
-### Create Environment
+The application supports the following `.env` settings:
+```ini
+# Core LLM Credentials (any of these free/local fallbacks can be configured)
+GOOGLE_API_KEY=your_gemini_api_key
+GROQ_API_KEY=your_groq_api_key
+HUGGINGFACEHUB_API_TOKEN=your_huggingface_token
+OLLAMA_API_URL=http://localhost:11434
+OLLAMA_MODEL=llama3.1
 
+# Web Search Fallback (Optional)
+TAVILY_API_KEY=your_tavily_api_key
+SERPER_API_KEY=your_serper_api_key
+
+# Redis Configuration (Optional, for persistent memory/cache)
+REDIS_HOST=localhost
+REDIS_PORT=6379
+
+# Cross-Encoder Re-ranking (Optional, set to true to enable)
+RAG_RERANKING_ENABLED=false
+```
+
+---
+
+## 🚀 Execution & Deployment
+
+### 1. Local Run
+Install dependencies and launch the platform:
 ```bash
-conda create -n deepretrieval python=3.9 -y
-
-conda activate deepretrieval
+pip install -r code/requirements.txt
+python run.py
 ```
+Access the premium interface in your browser at `http://localhost:8501`.
 
-### Install Dependencies
-
+### 2. Run with Docker Compose
+Spin up the RAG application and a persistent Redis cache instance automatically:
 ```bash
-pip install google-generativeai
-pip install requests
+docker-compose up --build
+```
+
+### 3. Kubernetes Deployment
+Apply the deployment manifest:
+```yaml
+kubectl apply -f k8s-deployment.yaml
 ```
 
 ---
 
-## 🔑 Setup Gemini API Key
-
-Generate an API key from Google AI Studio.
-
-Create an environment variable:
-
+## 🧪 Testing Strategy
+To execute the comprehensive test suite (verifying storage sync, hybrid retrieval, coreference resolution, citations, and input sanitization):
 ```bash
-export GOOGLE_API_KEY="YOUR_API_KEY"
+python -m unittest discover -s code/tests
 ```
-
-Verify:
-
-```bash
-echo $GOOGLE_API_KEY
-```
-
----
-
-## ▶️ Usage
-
-Run query rewriting:
-
-```bash
-python query_rewrite.py --query "What is artificial intelligence?"
-```
-
-Example output:
-
-```text
-Original Query:
-What is artificial intelligence?
-
-Rewritten Query:
-("artificial intelligence" OR AI)
-AND
-("machine learning" OR ML)
-```
-
----
-
-## 🧠 How It Works
-
-1. User enters a natural language query.
-2. Gemini analyzes the query.
-3. Important concepts and synonyms are extracted.
-4. Boolean operators are applied.
-5. An optimized retrieval query is generated.
-
----
-
-## 📊 Use Cases
-
-* Retrieval-Augmented Generation (RAG)
-* Search Engine Optimization
-* Academic Literature Search
-* Enterprise Knowledge Bases
-* Semantic Search Systems
-* Information Retrieval Research
-
----
-
-## 🚀 Future Improvements
-
-* Streamlit Web Interface
-* Query Expansion
-* Multi-Search Backend Support
-* Hybrid Retrieval
-* Vector Database Integration
-* LangChain Integration
-
----
-
-## 📸 Demo
-
-```bash
-python query_rewrite.py --query "Recent advances in machine learning"
-```
-
-Output:
-
-```text
-("machine learning" OR ML)
-AND
-("deep learning" OR neural networks)
-AND
-recent advances
-```
-
----
-
-## 🤝 Contributing
-
-Contributions are welcome.
-
-1. Fork the repository
-2. Create a feature branch
-3. Commit your changes
-4. Push to GitHub
-5. Open a Pull Request
-
----
-
-## 👨‍💻 Author
-
-**Shani Pratap Singh**
-
-GitHub: https://github.com/ShaniPratapSingh
-
----
-
-## ⭐ Support
-
-If you found this project useful, please consider giving it a star ⭐.
-
----
-
-## 📜 License
-
-This project is licensed under the MIT License.

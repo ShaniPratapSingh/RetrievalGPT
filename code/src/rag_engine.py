@@ -2,15 +2,26 @@ import os
 import re
 import json
 import time
+from typing import Tuple
 import numpy as np
-from pypdf import PdfReader
 from dotenv import load_dotenv
 import requests
 
-# Load environment variables
+
+from src.core.storage import StorageManager
+from src.core.retriever import HybridRetriever
+from src.core.agent import QueryAnalysisAgent
+from src.core.memory import ConversationalMemory
+from src.core.citation import CitationEngine
+from src.core.web_search import WebSearchClient
+from src.core.guardrails import GuardrailsManager
+from src.core.cache import RAGCache
+from src.core.multimodal import MultiDocumentParser
+from src.core.observability import telemetry, Logger
+
+logger = Logger("rag_engine")
 load_dotenv()
 
-# Sentence Transformers for local embeddings
 try:
     from sentence_transformers import SentenceTransformer
     HAS_SENTENCE_TRANSFORMERS = True
@@ -21,8 +32,8 @@ except ImportError:
 class RAGEngine:
     def __init__(self, local_model_name="all-MiniLM-L6-v2"):
         """
-        Initialize the RAG Engine.
-        Always uses local open-source sentence-transformers embeddings.
+        Initialize the enterprise-grade RAG Engine.
+        Uses local open-source sentence-transformers embeddings.
         """
         self.local_model_name = local_model_name
         self.documents = []  # List of dict: {id, source, text}
@@ -34,49 +45,88 @@ class RAGEngine:
             try:
                 self.local_model = SentenceTransformer(self.local_model_name)
             except Exception as e:
-                print(f"Failed to load local embedding model {self.local_model_name}: {e}")
+                logger.error("Failed to load local embedding model", name=self.local_model_name, error=str(e))
                 self.local_model = None
 
-    def get_embedding(self, text):
-        """Generate open-source embedding for a given text locally."""
+        # Instantiate core subsystems
+        self.storage = StorageManager()
+        self.retriever = HybridRetriever(self.storage, self.get_embedding)
+        self.agent = QueryAnalysisAgent(self._call_free_llm)
+        self.guardrails = GuardrailsManager(self._call_free_llm)
+        self.web_search = WebSearchClient()
+        self.cache = RAGCache()
+        
+        # Load any existing database records into local lists for legacy compatibility
+        self.sync_local_lists()
+        self.retriever.rebuild_sparse_index()
+
+    def sync_local_lists(self):
+        """Sync core local list structures with ChromaDB for backward compatibility."""
+        all_ch = self.storage.get_all_chunks()
+        self.chunks = all_ch
+        
+        # Deduplicate docs from chunks
+        seen_doc_ids = set()
+        self.documents = []
+        for ch in all_ch:
+            doc_id = ch["doc_id"]
+            if doc_id not in seen_doc_ids:
+                seen_doc_ids.add(doc_id)
+                self.documents.append({
+                    "id": doc_id,
+                    "source": ch["source"],
+                    "text": ""  # Lazy loaded/aggregated
+                })
+
+    def get_embedding(self, text: str) -> list:
+        """Generate open-source embedding for a given text locally (with caching)."""
         text = text.replace("\n", " ").strip()
         
+        # Check Cache first
+        cached = self.cache.get_embedding(text)
+        if cached:
+            return cached
+            
+        emb = None
         # Try Local SentenceTransformers Embeddings
         if self.local_model:
             try:
                 emb = self.local_model.encode(text)
-                return emb.tolist() if hasattr(emb, "tolist") else list(emb)
+                emb_list = emb.tolist() if hasattr(emb, "tolist") else list(emb)
+                self.cache.set_embedding(text, emb_list)
+                return emb_list
             except Exception as e:
-                print(f"Local embedding generation failed: {e}")
+                logger.error("Local embedding generation failed", error=str(e))
                 
         # Fallback Mock Embeddings (simple hash-based unit vector to prevent crash)
         np.random.seed(hash(text) % (2**32))
         mock_vec = np.random.randn(384)
         mock_vec /= np.linalg.norm(mock_vec)
-        return mock_vec.tolist()
+        emb_list = mock_vec.tolist()
+        self.cache.set_embedding(text, emb_list)
+        return emb_list
 
-    def load_document(self, file_path):
-        """Load text or PDF documents."""
+    def load_document(self, file_path: str) -> int:
+        """Load text, PDF, DOCX, Markdown, HTML, or Image files."""
         if not os.path.exists(file_path):
             raise FileNotFoundError(f"File not found: {file_path}")
             
         file_name = os.path.basename(file_path)
-        content = ""
+        ext = file_path.lower()
         
-        if file_path.lower().endswith(".pdf"):
-            try:
-                reader = PdfReader(file_path)
-                for page_num, page in enumerate(reader.pages):
-                    text = page.extract_text() or ""
-                    content += text + "\n"
-            except Exception as e:
-                raise ValueError(f"Failed to parse PDF {file_name}: {e}")
-        elif file_path.lower().endswith((".txt", ".md", ".json")):
-            try:
-                with open(file_path, "r", encoding="utf-8") as f:
-                    content = f.read()
-            except Exception as e:
-                raise ValueError(f"Failed to read file {file_name}: {e}")
+        content = ""
+        # Route to appropriate parser
+        if ext.endswith(".pdf"):
+            pages = MultiDocumentParser.parse_pdf(file_path)
+            content = "\n".join([p[0] for p in pages])
+        elif ext.endswith(".docx"):
+            pages = MultiDocumentParser.parse_docx(file_path)
+            content = "\n".join([p[0] for p in pages])
+        elif ext.endswith((".png", ".jpg", ".jpeg", ".tiff", ".bmp")):
+            content = MultiDocumentParser.parse_image_ocr(file_path)
+        elif ext.endswith((".txt", ".md", ".json", ".html")):
+            pages = MultiDocumentParser.parse_text_or_markdown(file_path)
+            content = "\n".join([p[0] for p in pages])
         else:
             raise ValueError(f"Unsupported file format for: {file_name}")
             
@@ -88,7 +138,7 @@ class RAGEngine:
         })
         return doc_id
 
-    def chunk_text(self, text, chunk_size=400, chunk_overlap=80):
+    def chunk_text(self, text: str, chunk_size=400, chunk_overlap=80) -> list:
         """Split text into manageable chunks with overlap."""
         text = re.sub(r'\s+', ' ', text)
         words = text.split()
@@ -105,57 +155,54 @@ class RAGEngine:
                 break
         return chunks
 
-    def index_document(self, doc_id, chunk_size=400, chunk_overlap=80):
-        """Index a loaded document into chunks and generate embeddings."""
+    def index_document(self, doc_id: int, chunk_size=400, chunk_overlap=80) -> int:
+        """Index a loaded document into chunks, generate embeddings, and save to database."""
         doc = self.documents[doc_id]
+        
+        # Check if it was parsed page-by-page or single text block
+        # For simplicity, we chunk the text block
         raw_chunks = self.chunk_text(doc["text"], chunk_size, chunk_overlap)
         
         indexed_chunks = []
         for idx, text in enumerate(raw_chunks):
             embedding = self.get_embedding(text)
             chunk_info = {
-                "id": len(self.chunks),
+                "id": len(self.chunks) + idx,
                 "doc_id": doc_id,
                 "source": doc["source"],
                 "text": text,
-                "embedding": embedding
+                "embedding": embedding,
+                "page": (idx // 3) + 1  # Simulated page estimation
             }
-            self.chunks.append(chunk_info)
             indexed_chunks.append(chunk_info)
             
+        # Add to storage manager
+        self.storage.add_chunks(indexed_chunks)
+        self.sync_local_lists()
+        
+        # Rebuild BM25 index
+        self.retriever.rebuild_sparse_index()
         return len(indexed_chunks)
 
-    def retrieve(self, query, top_k=3):
-        """Retrieve relevant chunks for a query using cosine similarity."""
-        if not self.chunks:
-            return []
-            
-        query_emb = np.array(self.get_embedding(query))
+    def retrieve(self, query: str, top_k=3) -> list:
+        """Retrieve relevant chunks for a query using hybrid retrieval."""
+        final_hits, needs_web = self.retriever.retrieve_hybrid(query, top_k=top_k)
         
-        scores = []
-        for chunk in self.chunks:
-            chunk_emb = np.array(chunk["embedding"])
-            # Cosine similarity
-            dot_product = np.dot(query_emb, chunk_emb)
-            norm_q = np.linalg.norm(query_emb)
-            norm_c = np.linalg.norm(chunk_emb)
-            similarity = dot_product / (norm_q * norm_c) if (norm_q > 0 and norm_c > 0) else 0.0
-            scores.append((chunk, similarity))
-            
-        scores.sort(key=lambda x: x[1], reverse=True)
-        return scores[:top_k]
+        # Format results matching legacy [(chunk_dict, score)] format
+        legacy_format = [(item[0], item[1]) for item in final_hits]
+        return legacy_format
 
-    def _call_free_llm(self, prompt, system_prompt=None, ollama_url=None, ollama_model=None):
+    def _call_free_llm(self, prompt: str, system_prompt=None, ollama_url=None, ollama_model=None) -> Tuple[str, str]:
         """
         Executes a prompt using the Free-Only LLM fallback chain.
-        1. Ollama (local)
-        2. Gemini Free Tier (cloud)
-        3. Groq Free Tier (cloud)
-        4. Hugging Face Inference API (cloud)
-        5. Mock Fallback
-        
-        Returns: (resolved_provider, response_text)
+        Supports caching.
         """
+        # Check cache
+        cache_key = f"system: {system_prompt or ''}\nprompt: {prompt}"
+        cached_val = self.cache.get_completion(cache_key)
+        if cached_val:
+            return "Cached (Local)", cached_val
+
         # Load local keys / overrides
         ollama_url = ollama_url or os.getenv("OLLAMA_API_URL", "http://localhost:11434")
         ollama_model = ollama_model or os.getenv("OLLAMA_MODEL", "llama3.1")
@@ -165,7 +212,6 @@ class RAGEngine:
 
         # 1. Try Ollama (Local)
         try:
-            # Query the chat endpoint
             url = f"{ollama_url.rstrip('/')}/api/chat"
             messages = []
             if system_prompt:
@@ -181,9 +227,10 @@ class RAGEngine:
             response = requests.post(url, json=payload, timeout=5)
             if response.status_code == 200:
                 result = response.json()
-                return "Ollama (Local)", result["message"]["content"]
-        except Exception as e:
-            # Ollama not running or timeout, proceed to next
+                output = result["message"]["content"]
+                self.cache.set_completion(cache_key, output)
+                return "Ollama (Local)", output
+        except Exception:
             pass
 
         # 2. Try Google Gemini Free Tier
@@ -201,9 +248,10 @@ class RAGEngine:
                 response = requests.post(url, headers=headers, json=payload, timeout=8)
                 if response.status_code == 200:
                     result = response.json()
-                    text = result["candidates"][0]["content"]["parts"][0]["text"]
-                    return "Gemini Free Tier (Cloud)", text
-            except Exception as e:
+                    output = result["candidates"][0]["content"]["parts"][0]["text"]
+                    self.cache.set_completion(cache_key, output)
+                    return "Gemini Free Tier (Cloud)", output
+            except Exception:
                 pass
 
         # 3. Try Groq Free Tier
@@ -227,9 +275,10 @@ class RAGEngine:
                 response = requests.post(url, headers=headers, json=payload, timeout=8)
                 if response.status_code == 200:
                     result = response.json()
-                    text = result["choices"][0]["message"]["content"]
-                    return "Groq Free Tier (Cloud)", text
-            except Exception as e:
+                    output = result["choices"][0]["message"]["content"]
+                    self.cache.set_completion(cache_key, output)
+                    return "Groq Free Tier (Cloud)", output
+            except Exception:
                 pass
 
         # 4. Try Hugging Face Free Inference API
@@ -248,44 +297,36 @@ class RAGEngine:
                 response = requests.post(url, headers=headers, json=payload, timeout=10)
                 if response.status_code == 200:
                     result = response.json()
-                    # Some HF responses are list of dict
                     if isinstance(result, list) and len(result) > 0:
-                        text = result[0].get("generated_text", "")
-                        # Remove prompt if model returned the whole transcript
-                        if text.startswith(formatted_input):
-                            text = text[len(formatted_input):].strip()
-                        return "Hugging Face Hub (Cloud)", text
-            except Exception as e:
+                        output = result[0].get("generated_text", "")
+                        if output.startswith(formatted_input):
+                            output = output[len(formatted_input):].strip()
+                        self.cache.set_completion(cache_key, output)
+                        return "Hugging Face Hub (Cloud)", output
+            except Exception:
                 pass
 
-        # 5. Mock/Demo Fallback mode
+        # 5. Mock Fallback
         mock_response = (
             "**[DEMO MODE: Offline & No API keys configured]**\n\n"
-            "I parsed your query and successfully simulated the RAG pipeline processing locally on your system."
+            "I parsed your query and simulated the RAG pipeline processing locally on your system."
         )
         return "Demo Fallback (Mock)", mock_response
 
-    def rewrite_query(self, query, ollama_url=None, ollama_model=None):
-        """
-        Rewrite query to Boolean terms using the free LLM chain.
-        """
-        system_prompt = "You are a query rewriting expert. Your task is to create query terms for user query to find relevant literature in a massive corpus."
-        
-        prompt_content = f"""Show your work in <think> </think> tags. Your final response must be in JSON format within <answer> </answer> tags. For example,
+    def rewrite_query(self, query: str, ollama_url=None, ollama_model=None) -> Tuple[str, str]:
+        """Rewrite query to Boolean terms using the free LLM chain."""
+        system_prompt = "You are a query rewriting expert. Your task is to create query terms for user query to find literature."
+        prompt_content = f"""Show your work in <think> </think> tags. Your final response must be in JSON format within <answer> </answer> tags.
 <think>
-[thinking process]
+[reasoning]
 </think>
 <answer>
 {{
     "query": "...."
-}} 
-</answer>. 
-Note: The query should use Boolean operators (AND, OR) and parentheses for grouping terms appropriately. You don't need to rewrite the query when the query is already good.
+}}
+</answer>
 
-Here's the user query:
-{query}
-Assistant: Let me rewrite the query with reasoning. 
-<think>
+User Query: {query}
 """
         provider, response_text = self._call_free_llm(
             prompt=prompt_content,
@@ -295,16 +336,13 @@ Assistant: Let me rewrite the query with reasoning.
         )
         
         if "Demo Fallback" in provider:
-            # Return raw query in mock mode
             return "Demo fallback: query rewriting bypassed.", query
             
         thought, rewritten_query = self._extract_thought_and_query(response_text)
-        # Append provider name to thought for transparency
         thought = f"[Reasoned via {provider}]\n{thought}"
         return thought, rewritten_query
 
-    def _extract_thought_and_query(self, response_text):
-        """Helper to parse <think> and <answer> blocks from generator output."""
+    def _extract_thought_and_query(self, response_text: str) -> Tuple[str, str]:
         thought = ""
         query = ""
         
@@ -344,8 +382,21 @@ Assistant: Let me rewrite the query with reasoning.
             
         return thought or "Thinking complete.", query
 
-    def generate_answer(self, query, context_chunks, chat_history=None, ollama_url=None, ollama_model=None):
-        """Generate final response based on retrieved chunks and query using free chain."""
+    def generate_answer(self, query: str, context_chunks: list, chat_history=None, ollama_url=None, ollama_model=None) -> str:
+        """Generate final response based on retrieved chunks and query, with citation formatting."""
+        # Sanitize query
+        query = self.guardrails.sanitize_input(query)
+        is_inj, msg = self.guardrails.detect_prompt_injection(query)
+        if is_inj:
+            return msg
+
+        # If context is low confidence, execute Web Search Fallback
+        if not context_chunks:
+            logger.info("Local context empty. Triggering Web Search Fallback...")
+            web_hits = self.web_search.search(query)
+            # Map web hits to context chunks structure
+            context_chunks = [(hit, 1.0) for hit in web_hits]
+
         context_str = ""
         for idx, (chunk, score) in enumerate(context_chunks):
             context_str += f"[Source {idx+1}]: {chunk['source']}\nContent: {chunk['text']}\n\n"
@@ -355,7 +406,11 @@ Assistant: Let me rewrite the query with reasoning.
             for speaker, text in chat_history[-6:]:
                 chat_history_str += f"{speaker}: {text}\n"
 
-        system_prompt = "You are RetrievalGPT, an intelligent RAG assistant. Answer the user's question accurately using ONLY the provided Source Documents. If the documents do not contain the answer, tell the user that the information is not present in the uploaded files."
+        system_prompt = (
+            "You are RetrievalGPT, an intelligent RAG assistant. Answer the user's question accurately using ONLY "
+            "the provided Source Documents. If the documents do not contain the answer, tell the user that the "
+            "information is not present in the uploaded files. You must cite your sources in the text using bracket footnotes like [1] or [2]."
+        )
 
         prompt = f"""Source Documents:
 {context_str}
@@ -373,16 +428,27 @@ Answer:"""
             ollama_model=ollama_model
         )
         
-        # If we got a successful answer, return it with provider footnote
         if "Demo Fallback" in provider:
-            # Custom beautiful mock answer
             mock_ans = (
                 f"**[DEMO MODE: Offline & No API keys configured]**\n\n"
                 f"Based on your query *'{query}'*, I parsed the matching document snippets:\n\n"
             )
             for idx, (chunk, score) in enumerate(context_chunks):
                 mock_ans += f"- **From {chunk['source']}** (relevance: {score:.2f}):\n  \"{chunk['text'][:160]}...\"\n\n"
-            mock_ans += "Please configure **Ollama** locally or enter a **Gemini/Groq API Key** in the sidebar to get actual generated answers."
             return mock_ans
             
-        return f"{response_text}\n\n*— Generated via {provider}*"
+        # Run Hallucination groundedness check
+        chunks_only = [item[0] for item in context_chunks]
+        score, is_hallucinating = self.guardrails.evaluate_groundedness(response_text, chunks_only)
+        if is_hallucinating:
+            return "I cannot confidently answer this based on the available information as it seems to contain unsupported claims."
+
+        # Run Citation grounding engine
+        clean_answer, citations = CitationEngine.extract_citations(response_text, chunks_only)
+        
+        # Save output in global telemetry
+        telemetry.record_provider(provider)
+        
+        # Append references to bottom of output for rendering in Streamlit
+        footer = f"\n\n*— Generated via {provider}*"
+        return f"{clean_answer}{footer}"
