@@ -16,11 +16,20 @@ class QueryAnalysisAgent:
         strategy = "hybrid"
         chunk_count = 4
         web_fallback_needed = False
+        summary_mode = "short"
         
+        # Detect mode
+        if "detailed" in query_lower:
+            summary_mode = "detailed"
+        elif any(w in query_lower for w in ["bullet", "points", "ideas"]):
+            summary_mode = "bullet"
+        elif any(w in query_lower for w in ["chapter", "section", "parts"]):
+            summary_mode = "chapter-wise"
+            
         if any(w in query_lower for w in ["compare", "difference", "versus", "vs"]):
             classification = "comparison"
             chunk_count = 6
-        elif any(w in query_lower for w in ["summarize", "summary", "overview", "tl;dr"]):
+        elif any(w in query_lower for w in ["summarize", "summary", "overview", "brief", "concise summary", "key points", "main ideas", "explain this document", "what is this document about"]):
             classification = "summarization"
             chunk_count = 8
             strategy = "dense"
@@ -37,7 +46,8 @@ class QueryAnalysisAgent:
             "chunk_count": chunk_count,
             "search_depth": chunk_count * 2,
             "web_fallback_needed": web_fallback_needed,
-            "rewritten_query": query
+            "rewritten_query": query,
+            "summary_mode": summary_mode
         }
 
     def analyze_query(self, query: str, history_str: str = "") -> Dict[str, Any]:
@@ -65,7 +75,8 @@ Example output format:
     "chunk_count": 4,
     "search_depth": 8,
     "web_fallback_needed": false | true,
-    "rewritten_query": "Fully expanded search query resolving any shorthand or references"
+    "rewritten_query": "Fully expanded search query resolving any shorthand or references",
+    "summary_mode": "short" | "detailed" | "bullet" | "chapter-wise"
 }}
 </answer>
 """
@@ -98,6 +109,7 @@ Example output format:
             plan_json["search_depth"] = int(plan_json.get("search_depth", 8))
             plan_json["web_fallback_needed"] = bool(plan_json.get("web_fallback_needed", False))
             plan_json["rewritten_query"] = plan_json.get("rewritten_query", query)
+            plan_json["summary_mode"] = plan_json.get("summary_mode", "short")
             
             logger.info("Query analyzed by agent", provider=provider, classification=plan_json["classification"], strategy=plan_json["strategy"])
             telemetry.end_span("agent_query_analysis")

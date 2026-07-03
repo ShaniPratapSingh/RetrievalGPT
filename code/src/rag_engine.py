@@ -17,6 +17,7 @@ from src.core.web_search import WebSearchClient
 from src.core.guardrails import GuardrailsManager
 from src.core.cache import RAGCache
 from src.core.multimodal import MultiDocumentParser
+from src.core.services.summarization_service import SummarizationService
 from src.core.observability import telemetry, Logger
 
 logger = Logger("rag_engine")
@@ -55,6 +56,7 @@ class RAGEngine:
         self.guardrails = GuardrailsManager(self._call_free_llm)
         self.web_search = WebSearchClient()
         self.cache = RAGCache()
+        self.summarizer = SummarizationService(self._call_free_llm)
         
         # Load any existing database records into local lists for legacy compatibility
         self.sync_local_lists()
@@ -452,3 +454,29 @@ Answer:"""
         # Append references to bottom of output for rendering in Streamlit
         footer = f"\n\n*— Generated via {provider}*"
         return f"{clean_answer}{footer}"
+
+    def summarize_active_document(self, mode: str = "short", doc_name: str = None) -> dict:
+        """Summarize the active document or a document specified by doc_name."""
+        if not self.documents:
+            return {
+                "summary": "No documents uploaded. Please upload a document to summarize.",
+                "summary_type": mode,
+                "document_name": "None",
+                "pages_processed": 0,
+                "confidence": 0.0
+            }
+            
+        # If doc_name is provided, search for it
+        target_doc = None
+        if doc_name:
+            for doc in self.documents:
+                if doc["source"].lower() == doc_name.lower():
+                    target_doc = doc
+                    break
+                    
+        # Fallback to the last uploaded document
+        if not target_doc:
+            target_doc = self.documents[-1]
+            
+        return self.summarizer.summarize_document(target_doc["text"], target_doc["source"], mode)
+

@@ -362,6 +362,29 @@ with main_col:
             classification = agent_plan.get("classification", "factual")
             expanded_query = agent_plan.get("rewritten_query", prompt)
             
+        # Bypass retrieval for summarization intent
+        if classification == "summarization":
+            with st.spinner("📚 Generating hierarchical Map-Reduce summary..."):
+                sum_mode = agent_plan.get("summary_mode", "short")
+                res = st.session_state.rag_engine.summarize_active_document(mode=sum_mode)
+                summary_text = res.get("summary", "")
+                
+                answer = (
+                    f"### 📄 Document Summary: **{res.get('document_name')}**\n"
+                    f"- **Summary Type**: `{res.get('summary_type').upper()}`\n"
+                    f"- **Pages Processed**: `{res.get('pages_processed')}`\n"
+                    f"- **Analysis Confidence**: `{res.get('confidence')}`\n\n"
+                    f"--- \n\n"
+                    f"{summary_text}"
+                )
+                telemetry.end_span("total_query_latency")
+                
+                with st.chat_message("assistant", avatar="🤖"):
+                    st.markdown(answer)
+                    
+                st.session_state.memory.add_message("assistant", answer)
+                st.rerun()
+            
         # 2. Hybrid Retrieval Phase
         retrieved_chunks = []
         with st.status(f"🔍 Searching Context (Plan: {classification} / {agent_plan.get('strategy')})") as status:
