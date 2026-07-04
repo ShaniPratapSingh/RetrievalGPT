@@ -101,5 +101,56 @@ class TestAgenticRetrievalPipeline(unittest.TestCase):
         res_chapter = retriever.apply_filters(chunks, {"chapter": "Intro"})
         self.assertEqual(len(res_chapter), 1)
 
+    def test_metadata_filters_page_range_and_dates(self):
+        class FakeHybrid:
+            def retrieve_dense(self, q, top_k): return []
+            def retrieve_sparse(self, q, top_k): return []
+            def reciprocal_rank_fusion(self, d, s): return []
+            
+        retriever = MetadataRetriever(None, None, FakeHybrid())
+        chunks = [
+            {"text": "A", "source": "book1.pdf", "page": 5, "created_at": "2026-07-04"},
+            {"text": "B", "source": "book2.pdf", "page": 12, "created_at": "2026-07-04"},
+            {"text": "C", "source": "book1.pdf", "page": 18, "created_at": "2026-07-05"}
+        ]
+        
+        # Filter by page range (start, end)
+        res_range = retriever.apply_filters(chunks, {"page_range": (5, 15)})
+        self.assertEqual(len(res_range), 2)
+        
+        # Filter by date
+        res_date = retriever.apply_filters(chunks, {"upload_date": "2026-07-05"})
+        self.assertEqual(len(res_date), 1)
+        self.assertEqual(res_date[0]["text"], "C")
+
+    def test_rrf_weights_configuration(self):
+        from src.core.retriever import HybridRetriever
+        retriever = HybridRetriever(None, None)
+        
+        # Set weights and verify RRF scores shift
+        retriever.dense_weight = 2.0
+        retriever.sparse_weight = 0.5
+        
+        dense = [{"chunk": {"id": 1, "doc_id": 0}, "score": 0.9}]
+        sparse = [{"chunk": {"id": 2, "doc_id": 0}, "score": 0.8}]
+        
+        results = retriever.reciprocal_rank_fusion(dense, sparse, rrf_k=60)
+        # ID 1 should have score: 2.0 * (1/61) ~ 0.0327
+        # ID 2 should have score: 0.5 * (1/61) ~ 0.0081
+        self.assertEqual(results[0][0]["id"], 1)
+        self.assertTrue(results[0][1] > results[1][1] * 2)
+
+    def test_context_compression_low_info(self):
+        from src.core.retriever import HybridRetriever
+        retriever = HybridRetriever(None, None)
+        
+        items = [
+            ({"text": "Valid long conceptual sentence explaining information retrieval.", "id": 1}, 0.9),
+            ({"text": "Short", "id": 2}, 0.8) # Low info, dropped
+        ]
+        compressed = retriever.compress_context(items)
+        self.assertEqual(len(compressed), 1)
+        self.assertEqual(compressed[0][0]["id"], 1)
+
 if __name__ == "__main__":
     unittest.main()

@@ -28,7 +28,12 @@ class HybridRetriever:
         self.bm25_chunks = []
         self.reranker = None
         self.reranker_loaded = False
-
+        
+        # Configurable RRF parameter (default to standard 60)
+        self.rrf_k = int(os.getenv("RAG_RRF_K", 60))
+        # Configurable fusion weights: dense weight vs sparse weight
+        self.dense_weight = float(os.getenv("RAG_DENSE_WEIGHT", 1.0))
+        self.sparse_weight = float(os.getenv("RAG_SPARSE_WEIGHT", 1.0))
                 
     def rebuild_sparse_index(self):
         """Fit BM25 on all current chunks from storage."""
@@ -69,11 +74,9 @@ class HybridRetriever:
         """Retrieve relevant chunks using dense vector embeddings."""
         query_emb = self.get_embedding(query)
         
-        # If storage client is enabled, query it
         if self.storage.db_enabled:
             return self.storage.query_similarity(query_emb, top_k=top_k)
             
-        # Fallback to manual dense search
         chunks = self.storage.get_all_chunks()
         if not chunks:
             return []
@@ -96,21 +99,22 @@ class HybridRetriever:
         scored.sort(key=lambda x: x["score"], reverse=True)
         return scored[:top_k]
 
-    def reciprocal_rank_fusion(self, dense_results: List[Dict[str, Any]], sparse_results: List[Dict[str, Any]], rrf_k: int = 60) -> List[Tuple[Dict[str, Any], float]]:
-        """Perform Reciprocal Rank Fusion (RRF) on dense and sparse outputs."""
-        rrf_scores = {} # Key: chunk ID/signature, value: (chunk, rrf_score)
+    def reciprocal_rank_fusion(self, dense_results: List[Dict[str, Any]], sparse_results: List[Dict[str, Any]], rrf_k: Optional[int] = None) -> List[Tuple[Dict[str, Any], float]]:
+        """Perform Reciprocal Rank Fusion (RRF) with configurable weights and smoothing parameter."""
+        rrf_k = rrf_k or self.rrf_k
+        rrf_scores = {}
         
-        # Compute scores for dense
+        # Compute weighted scores for dense results
         for rank, item in enumerate(dense_results):
             chunk = item["chunk"]
             cid = f"{chunk['doc_id']}_{chunk['id']}"
-            rrf_scores[cid] = (chunk, 1.0 / (rrf_k + rank + 1))
+            rrf_scores[cid] = (chunk, self.dense_weight * (1.0 / (rrf_k + rank + 1)))
             
-        # Compute scores for sparse (add or create)
+        # Compute weighted scores for sparse results
         for rank, item in enumerate(sparse_results):
             chunk = item["chunk"]
             cid = f"{chunk['doc_id']}_{chunk['id']}"
-            score = 1.0 / (rrf_k + rank + 1)
+            score = self.sparse_weight * (1.0 / (rrf_k + rank + 1))
             if cid in rrf_scores:
                 rrf_scores[cid] = (chunk, rrf_scores[cid][1] + score)
             else:
@@ -144,8 +148,13 @@ class HybridRetriever:
             pairs = [[query, item[0]["text"]] for item in rrf_results]
             try:
                 scores = self.reranker.predict(pairs)
-                # Zip and sort
-                reranked = [(rrf_results[i][0], float(scores[i])) for i in range(len(rrf_results))]
+                reranked = []
+                for i in range(len(rrf_results)):
+                    chunk = rrf_results[i][0]
+                    score = float(scores[i])
+                    # Attach rerank score directly
+                    chunk["rerank_score"] = score
+                    reranked.append((chunk, score))
                 reranked.sort(key=lambda x: x[1], reverse=True)
                 telemetry.end_span("cross_encoder_rerank")
                 return reranked[:top_n]
@@ -153,7 +162,6 @@ class HybridRetriever:
                 logger.error("Failed to run local Cross-Encoder re-ranker", error=str(e))
                 telemetry.end_span("cross_encoder_rerank")
                 
-        # Fallback to keeping the top_n from RRF
         return rrf_results[:top_n]
 
     def compress_context(self, items: List[Tuple[Dict[str, Any], float]], similarity_threshold: float = 0.85) -> List[Tuple[Dict[str, Any], float]]:
@@ -162,11 +170,16 @@ class HybridRetriever:
         seen_texts = []
         
         for chunk, score in items:
-            # Simple content similarity check (fuzzy overlap or Jaccard similarity)
             text_cleaned = re.sub(r'\s+', '', chunk["text"].lower())
+            
+            # Additional low-information context filter: skip if text contains too few alphabetic chars
+            alpha_chars = len(re.sub(r'[^a-z]', '', text_cleaned))
+            if alpha_chars < 10:
+                logger.info("Context compression dropped low-information chunk", id=chunk.get("id"))
+                continue
+                
             is_duplicate = False
             for prev_text in seen_texts:
-                # If they are very similar or one contains another
                 if prev_text in text_cleaned or text_cleaned in prev_text:
                     is_duplicate = True
                     break
@@ -188,34 +201,35 @@ class HybridRetriever:
         """
         telemetry.start_span("hybrid_retrieve")
         
-        # 1 & 2. Get top search results
         dense_hits = self.retrieve_dense(query, top_k=top_k * 2)
         sparse_hits = self.retrieve_sparse(query, top_k=top_k * 2)
         
-        # 3. RRF
         rrf_hits = self.reciprocal_rank_fusion(dense_hits, sparse_hits)
-        
-        # 4. Re-rank
         reranked_hits = self.rerank_results(query, rrf_hits, top_n=top_k)
-        
-        # 5. Compress
         final_hits = self.compress_context(reranked_hits)
         
         telemetry.end_span("hybrid_retrieve")
         
-        # Determine if confidence score is low (e.g. if the top result's score is below threshold)
+        # Calculate retrieval confidence score and stamp it onto matched chunks
+        for rank, (chunk, score) in enumerate(final_hits):
+            # Calculate dynamic confidence (normalized between 0.0 and 1.0)
+            if self.reranker:
+                # Map cross-encoder scores (typically in range [-10, 10]) to sigmoid range
+                confidence = float(1.0 / (1.0 + np.exp(-score)))
+            else:
+                # Normalized RRF score confidence
+                confidence = float(min(1.0, score * 10))
+            chunk["retrieval_confidence"] = round(confidence, 2)
+            
         needs_web_fallback = False
         if not final_hits:
             needs_web_fallback = True
         else:
             top_score = final_hits[0][1]
-            # Cross-encoder scores can be negative, so we check relative confidence
             if self.reranker:
-                # MS-Marco Cross-Encoder scores: usually > 0 is highly relevant, < -2 is low relevance
                 if top_score < -2.0:
                     needs_web_fallback = True
             else:
-                # If falling back to RRF score, threshold check
                 if top_score < 0.01:
                     needs_web_fallback = True
                     

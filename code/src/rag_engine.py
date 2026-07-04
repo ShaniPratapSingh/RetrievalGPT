@@ -62,6 +62,19 @@ class RAGEngine:
         self.router = QueryRouter(self._call_free_llm, self.storage, self.get_embedding, self.retriever)
         self.ingestion_pipeline = DocumentIntelligencePipeline()
         
+        # Agentic routing components
+        from src.agents.intent_classifier import QueryIntentClassifier
+        from src.agents.query_rewriter import QueryRewriter
+        from src.agents.query_planner import QueryPlanner
+        from src.agents.context_compressor import ContextCompressor
+        from src.agents.response_generator import ResponseGenerator
+        
+        self.intent_classifier = QueryIntentClassifier(self._call_free_llm)
+        self.query_rewriter = QueryRewriter(self._call_free_llm)
+        self.query_planner = QueryPlanner()
+        self.context_compressor = ContextCompressor()
+        self.response_generator = ResponseGenerator(self._call_free_llm)
+        
         # Load any existing database records into local lists for legacy compatibility
         self.sync_local_lists()
         self.retriever.rebuild_sparse_index()
@@ -219,12 +232,52 @@ class RAGEngine:
             
         return len(indexed_chunks)
 
-    def retrieve(self, query: str, top_k=3) -> list:
-        """Retrieve relevant chunks for a query using hybrid retrieval."""
-        final_hits, needs_web = self.retriever.retrieve_hybrid(query, top_k=top_k)
+    def retrieve(self, query: str, top_k=None, filters=None) -> list:
+        """Agentic Retrieval Workflow: Classifies intent, rewrites, plans, retrieves, and compresses."""
+        # 1. Classify Intent
+        classification = self.intent_classifier.classify(query)
+        intent = classification["intent"]
         
-        # Format results matching legacy [(chunk_dict, score)] format
-        legacy_format = [(item[0], item[1]) for item in final_hits]
+        # 2. Rewrite Query
+        rewritten_query = self.query_rewriter.rewrite(query)
+        
+        # 3. Create plan
+        plan = self.query_planner.create_plan(intent, rewritten_query, filters)
+        
+        # Execute plan retrieval parameters
+        top_k = top_k or plan["top_k"]
+        dense_hits = []
+        sparse_hits = []
+        
+        if plan["retrieval_strategy"] in ["dense", "hybrid"]:
+            dense_hits = self.retriever.retrieve_dense(rewritten_query, top_k=top_k * 2)
+        if plan["retrieval_strategy"] in ["sparse", "hybrid"]:
+            sparse_hits = self.retriever.retrieve_sparse(rewritten_query, top_k=top_k * 2)
+            
+        # Reciprocal Rank Fusion
+        rrf_hits = self.retriever.reciprocal_rank_fusion(dense_hits, sparse_hits)
+        
+        # Re-rank via Cross-Encoder
+        reranked_hits = self.retriever.rerank_results(rewritten_query, rrf_hits, top_n=plan["reranking_depth"])
+        
+        # Compress
+        compressed_hits = self.context_compressor.compress(reranked_hits)
+        
+        # Limit to target top_k
+        final_hits = compressed_hits[:top_k]
+        
+        # Estimate Confidence
+        scores = self.response_generator.estimate_confidence(final_hits)
+        
+        # Map to legacy [(chunk, score)] format
+        legacy_format = []
+        for chunk, score in final_hits:
+            chunk_copy = chunk.copy()
+            chunk_copy["retrieval_confidence"] = scores["retrieval_confidence"]
+            chunk_copy["evidence_coverage"] = scores["evidence_coverage"]
+            chunk_copy["answer_confidence"] = scores["answer_confidence"]
+            legacy_format.append((chunk_copy, score))
+            
         return legacy_format
 
     def _call_free_llm(self, prompt: str, system_prompt=None, ollama_url=None, ollama_model=None) -> Tuple[str, str]:
@@ -418,64 +471,24 @@ User Query: {query}
         return thought or "Thinking complete.", query
 
     def generate_answer(self, query: str, context_chunks: list, chat_history=None, ollama_url=None, ollama_model=None) -> str:
-        """Generate final response based on retrieved chunks and query, with citation formatting."""
-        # Sanitize query
+        """Generate final response using ResponseGenerator agent, with hallucination checks & web fallback."""
         query = self.guardrails.sanitize_input(query)
         is_inj, msg = self.guardrails.detect_prompt_injection(query)
         if is_inj:
             return msg
 
-        # If context is low confidence, execute Web Search Fallback
+        # If context is low confidence or empty, run Web Search Fallback
         if not context_chunks:
             logger.info("Local context empty. Triggering Web Search Fallback...")
             web_hits = self.web_search.search(query)
-            # Map web hits to context chunks structure
             context_chunks = [(hit, 1.0) for hit in web_hits]
 
-        context_str = ""
-        for idx, (chunk, score) in enumerate(context_chunks):
-            context_str += f"[Source {idx+1}]: {chunk['source']}\nContent: {chunk['text']}\n\n"
-            
-        chat_history_str = ""
-        if chat_history:
-            for speaker, text in chat_history[-6:]:
-                chat_history_str += f"{speaker}: {text}\n"
-
-        system_prompt = (
-            "You are a Staff AI Research Assistant. Answer the user's question accurately using ONLY "
-            "the provided Source Documents. Write fluent, highly professional, human-readable answers. "
-            "DO NOT under any circumstances mention RAG implementation details, 'retrieved chunks', "
-            "'snippets', or 'the files provided'. If the source documents do not contain the answer, "
-            "state that explicitly. Format citations clearly at the end of the text like:\n"
-            "Source: [document_name]\n"
-            "Page: [page_number]"
-        )
-
-        prompt = f"""Source Documents:
-{context_str}
-
-Chat History:
-{chat_history_str}
-
-User Question: {query}
-Answer:"""
-
-        provider, response_text = self._call_free_llm(
-            prompt=prompt,
-            system_prompt=system_prompt,
-            ollama_url=ollama_url,
-            ollama_model=ollama_model
-        )
+        # Use ResponseGenerator to synthesize response
+        response_text, scores = self.response_generator.generate(query, context_chunks)
         
-        if "Demo Fallback" in provider:
-            mock_ans = (
-                f"**[DEMO MODE: Offline & No API keys configured]**\n\n"
-                f"The system processed your request locally. The matched source document segments indicate:\n\n"
-            )
-            for idx, (chunk, score) in enumerate(context_chunks):
-                mock_ans += f"- **{chunk['source']}** (Page {chunk.get('page', 1)}):\n  \"{chunk['text'][:160]}...\"\n\n"
-            return mock_ans
-            
+        if response_text == "I could not find enough evidence in the uploaded documents.":
+            return response_text
+
         # Run Hallucination groundedness check
         chunks_only = [item[0] for item in context_chunks]
         score, is_hallucinating = self.guardrails.evaluate_groundedness(response_text, chunks_only)
@@ -485,11 +498,8 @@ Answer:"""
         # Run Citation grounding engine
         clean_answer, citations = CitationEngine.extract_citations(response_text, chunks_only)
         
-        # Save output in global telemetry
-        telemetry.record_provider(provider)
-        
         # Append references to bottom of output for rendering in Streamlit
-        footer = f"\n\n*— Generated via {provider}*"
+        footer = f"\n\n*— Generated response (Retrieval Confidence: {scores.get('retrieval_confidence', 0.5)})*"
         return f"{clean_answer}{footer}"
 
     def summarize_active_document(self, mode: str = "short", doc_name: str = None) -> dict:
