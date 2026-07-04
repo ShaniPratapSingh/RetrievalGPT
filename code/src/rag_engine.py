@@ -2,7 +2,7 @@ import os
 import re
 import json
 import time
-from typing import Tuple
+from typing import Tuple, List, Dict, Any
 import numpy as np
 from dotenv import load_dotenv
 import requests
@@ -110,14 +110,32 @@ class RAGEngine:
         self.cache.set_embedding(text, emb_list)
         return emb_list
 
+    def get_embeddings_batch(self, texts: List[str]) -> np.ndarray:
+        """Batch generate embeddings using local model or fallback."""
+        if self.local_model:
+            try:
+                embs = self.local_model.encode(texts)
+                return embs
+            except Exception as e:
+                logger.error("Batch embedding generation failed, falling back to sequential", error=str(e))
+        import numpy as np
+        return np.array([self.get_embedding(t) for t in texts])
+
     def load_document(self, file_path: str) -> int:
-        """Load text, PDF, DOCX, Markdown, HTML, or Image files."""
+        """Load document, perform duplicate checking, and extract metadata."""
         if not os.path.exists(file_path):
             raise FileNotFoundError(f"File not found: {file_path}")
             
         file_name = os.path.basename(file_path)
-        ext = file_path.lower()
+        doc_hash = MultiDocumentParser.get_file_hash(file_path)
         
+        # Duplicate detection check
+        for doc in self.documents:
+            if doc.get("hash") == doc_hash:
+                logger.info("Duplicate document detected, bypassing ingestion", file=file_name)
+                return doc["id"]
+                
+        ext = file_path.lower()
         content = ""
         # Route to appropriate parser
         if ext.endswith(".pdf"):
@@ -135,10 +153,14 @@ class RAGEngine:
             raise ValueError(f"Unsupported file format for: {file_name}")
             
         doc_id = len(self.documents)
+        meta = MultiDocumentParser.extract_metadata(file_path, content)
+        
         self.documents.append({
             "id": doc_id,
             "source": file_name,
-            "text": content
+            "text": content,
+            "hash": doc_hash,
+            "metadata": meta
         })
         return doc_id
 
@@ -160,23 +182,28 @@ class RAGEngine:
         return chunks
 
     def index_document(self, doc_id: int, chunk_size=400, chunk_overlap=80) -> int:
-        """Index a loaded document into chunks, generate embeddings, and save to database."""
+        """Index a loaded document using SemanticChunker, score quality, and save to storage."""
+        from src.core.splitter import SemanticChunker
         doc = self.documents[doc_id]
         
-        # Check if it was parsed page-by-page or single text block
-        # For simplicity, we chunk the text block
-        raw_chunks = self.chunk_text(doc["text"], chunk_size, chunk_overlap)
+        # Initialize Semantic Chunker with RAGEngine batch embedding function
+        chunker = SemanticChunker(embed_fn=self.get_embeddings_batch)
+        raw_chunks = chunker.split_text(doc["text"])
         
         indexed_chunks = []
         for idx, text in enumerate(raw_chunks):
             embedding = self.get_embedding(text)
+            # Fetch pre-indexed quality score
+            quality_score = self.router.filter.get_quality_score(text)
+            
             chunk_info = {
                 "id": len(self.chunks) + idx,
                 "doc_id": doc_id,
                 "source": doc["source"],
                 "text": text,
                 "embedding": embedding,
-                "page": (idx // 3) + 1  # Simulated page estimation
+                "page": (idx // 3) + 1,  # Page estimation
+                "quality_score": quality_score
             }
             indexed_chunks.append(chunk_info)
             

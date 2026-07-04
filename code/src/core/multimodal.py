@@ -106,3 +106,39 @@ class MultiDocumentParser:
         except Exception as e:
             logger.error("OCR execution failed", path=file_path, error=str(e))
             return f"[OCR Failure on {os.path.basename(file_path)}]: {str(e)}"
+
+    @staticmethod
+    def get_file_hash(file_path: str) -> str:
+        """Generate MD5 hash of the file for duplicate checking."""
+        import hashlib
+        hasher = hashlib.md5()
+        try:
+            with open(file_path, 'rb') as f:
+                buf = f.read(65536)
+                while len(buf) > 0:
+                    hasher.update(buf)
+                    buf = f.read(65536)
+            return hasher.hexdigest()
+        except Exception as e:
+            logger.error("Hash calculation failed", path=file_path, error=str(e))
+            return ""
+
+    @staticmethod
+    def extract_metadata(file_path: str, text: str) -> Dict[str, Any]:
+        """Automatically extracts attributes from text content."""
+        word_count = len(re.findall(r'\w+', text))
+        reading_time = max(1, round(word_count / 200)) # Estimate 200 WPM
+        
+        # Detect basic language
+        language = "en"
+        if re.search(r'\b(der|die|das|und|ist)\b', text.lower()):
+            language = "de"
+        elif re.search(r'\b(el|la|los|las|y|es)\b', text.lower()):
+            language = "es"
+            
+        return {
+            "title": os.path.basename(file_path),
+            "word_count": word_count,
+            "reading_time_minutes": reading_time,
+            "language": language
+        }

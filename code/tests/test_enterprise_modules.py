@@ -63,5 +63,42 @@ class TestEnterpriseModules(unittest.TestCase):
         self.assertEqual(compressed[0][0]["id"], 1)
         self.assertEqual(compressed[1][0]["id"], 3)
 
+    def test_document_duplicate_hashing(self):
+        from src.core.multimodal import MultiDocumentParser
+        import tempfile
+        
+        with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as f:
+            f.write(b"Unique content for hashing check.")
+            temp_path = f.name
+            
+        try:
+            hash1 = MultiDocumentParser.get_file_hash(temp_path)
+            hash2 = MultiDocumentParser.get_file_hash(temp_path)
+            self.assertEqual(hash1, hash2)
+            self.assertTrue(len(hash1) > 0)
+        finally:
+            os.unlink(temp_path)
+
+    def test_metadata_extraction(self):
+        from src.core.multimodal import MultiDocumentParser
+        meta = MultiDocumentParser.extract_metadata("document.pdf", "This is some dummy text. " * 50) # 250 words
+        self.assertEqual(meta["language"], "en")
+        self.assertEqual(meta["word_count"], 250)
+        self.assertEqual(meta["reading_time_minutes"], 1)
+
+    def test_semantic_chunker(self):
+        from src.core.splitter import SemanticChunker
+        # Mock embeddings: return static vector
+        def mock_embed(texts):
+            import numpy as np
+            return np.ones((len(texts), 384))
+            
+        chunker = SemanticChunker(embed_fn=mock_embed, similarity_threshold=0.8)
+        text = "This is sentence one. This is sentence two. This is sentence three."
+        chunks = chunker.split_text(text)
+        # All sentences will group together because their embeddings are identical (sim = 1.0)
+        self.assertEqual(len(chunks), 1)
+        self.assertEqual(chunks[0], text)
+
 if __name__ == "__main__":
     unittest.main()
