@@ -276,6 +276,27 @@ with st.sidebar:
         top_k = st.slider("Chunks to Retrieve", 1, 15, 5)
         web_search_fallback = st.toggle("Enable Web Search Fallback", value=True)
 
+    # Metadata Filters
+    with st.expander("🔍 Metadata Filters", expanded=False):
+        doc_options = ["All"] + [d["source"] for d in st.session_state.rag_engine.documents]
+        selected_doc = st.selectbox("Filter by Document", options=doc_options)
+        selected_page = st.text_input("Filter by Page Number", value="", help="e.g. 5 or Leave blank")
+        selected_chapter = st.text_input("Filter by Chapter Name", value="")
+        selected_section = st.text_input("Filter by Section Name", value="")
+        
+        active_filters = {}
+        if selected_doc != "All":
+            active_filters["document"] = selected_doc
+        if selected_page:
+            try:
+                active_filters["page"] = int(selected_page)
+            except ValueError:
+                active_filters["page"] = selected_page
+        if selected_chapter:
+            active_filters["chapter"] = selected_chapter
+        if selected_section:
+            active_filters["section"] = selected_section
+
     # Document uploader (supports PDF, DOCX, TXT, Markdown, HTML, Images)
     st.markdown("### 📁 Document Store")
     uploaded_files = st.file_uploader(
@@ -355,17 +376,16 @@ with main_col:
         telemetry.reset()
         telemetry.start_span("total_query_latency")
         
-        # 1. Query Analysis & Coreference Resolution
+        # 1. Query Routing & Intent Classification
         with st.spinner("🤖 Routing Query Strategy..."):
             hist_str = st.session_state.memory.get_history_string()
-            agent_plan = st.session_state.rag_engine.agent.analyze_query(prompt, hist_str)
-            classification = agent_plan.get("classification", "factual")
-            expanded_query = agent_plan.get("rewritten_query", prompt)
+            routed = st.session_state.rag_engine.router.route_query(prompt, hist_str, active_filters)
+            route = routed["route"]
+            intent = routed["intent"]
             
-        # Bypass retrieval for summarization intent
-        if classification == "summarization":
+        if route == "summarization":
             with st.spinner("📚 Generating hierarchical Map-Reduce summary..."):
-                sum_mode = agent_plan.get("summary_mode", "short")
+                sum_mode = routed.get("summary_mode", "short")
                 res = st.session_state.rag_engine.summarize_active_document(mode=sum_mode)
                 summary_text = res.get("summary", "")
                 
@@ -375,56 +395,69 @@ with main_col:
                     f"- **Pages Processed**: `{res.get('pages_processed')}`\n"
                     f"- **Analysis Confidence**: `{res.get('confidence')}`\n\n"
                     f"--- \n\n"
+                    f"### Key Themes & Ideas\n"
                     f"{summary_text}"
                 )
                 telemetry.end_span("total_query_latency")
                 
                 with st.chat_message("assistant", avatar="🤖"):
                     st.markdown(answer)
-                    
                 st.session_state.memory.add_message("assistant", answer)
                 st.rerun()
-            
-        # 2. Hybrid Retrieval Phase
-        retrieved_chunks = []
-        with st.status(f"🔍 Searching Context (Plan: {classification} / {agent_plan.get('strategy')})") as status:
-            telemetry.start_span("retrieval_and_filtering")
-            # Select retrieval strategy based on selection or agent classification
-            active_strat = strategy if strategy != "Hybrid" else agent_plan.get("strategy", "hybrid")
-            
-            if active_strat == "dense":
-                hits = st.session_state.rag_engine.retriever.retrieve_dense(expanded_query, top_k=top_k)
-            elif active_strat == "sparse":
-                hits = st.session_state.rag_engine.retriever.retrieve_sparse(expanded_query, top_k=top_k)
-            else:
-                # Default Hybrid
-                hits_raw, needs_fallback = st.session_state.rag_engine.retriever.retrieve_hybrid(expanded_query, top_k=top_k)
-                hits = [{"chunk": h[0], "score": h[1]} for h in hits_raw]
                 
-            # Filter and construct legacy RAG chunks format
-            retrieved_chunks = [(h["chunk"], h["score"]) for h in hits]
-            telemetry.end_span("retrieval_and_filtering")
-            
-            # Execute Web Fallback if confidence is low, no chunks, or agent flagged it
-            if web_search_fallback and (not retrieved_chunks or agent_plan.get("web_fallback_needed", False)):
-                status.update(label="Confidence low. Triggering Web Search Fallback...", state="running")
-                telemetry.start_span("web_fallback")
-                web_hits = st.session_state.rag_engine.web_search.search(expanded_query, num_results=4)
-                # Map to context chunks structure
-                for hit in web_hits:
-                    retrieved_chunks.append((hit, 0.90))
-                telemetry.end_span("web_fallback")
+        elif route == "quote_extraction":
+            with st.spinner("💬 Extracting key passage..."):
+                quote_card = routed["data"]
                 
-            status.update(label=f"Retrieved {len(retrieved_chunks)} source chunks.", state="complete")
-            
-        # 3. Response Generation Phase
-        with st.spinner("🤖 Formulating grounded response..."):
-            telemetry.start_span("llm_response_generation")
-            
-            history_tuples = [(msg["role"], msg["content"]) for msg in st.session_state.memory.messages[:-1]]
+                if quote_card.get("found", True):
+                    answer = (
+                        f"💬 **Verbatim Quote:**\n"
+                        f"> \"{quote_card['quote']}\"\n\n"
+                        f"**Contextual Explanation:**\n"
+                        f"{quote_card['explanation']}\n\n"
+                        f"**Source Document:** `{quote_card['source_document']}` | **Page/Section:** `{quote_card['page']}` | **Confidence:** `{quote_card['confidence']}`"
+                    )
+                else:
+                    answer = (
+                        f"⚠️ **Verbatim Passage:**\n"
+                        f"> *\"{quote_card['quote']}\"*\n\n"
+                        f"**Central Theme:**\n"
+                        f"{quote_card['explanation']}"
+                    )
+                    
+                telemetry.end_span("total_query_latency")
+                with st.chat_message("assistant", avatar="🤖"):
+                    st.markdown(answer)
+                st.session_state.memory.add_message("assistant", answer)
+                st.rerun()
+                
+        else:
+            # 2. Standard QA Retrieval Phase
+            with st.status(f"🔍 Searching Context (Intent: {intent})") as status:
+                telemetry.start_span("retrieval_and_filtering")
+                final_chunks = routed["data"]
+                retrieved_chunks = [(c, c.get("rrf_score", 1.0)) for c in final_chunks]
+                telemetry.end_span("retrieval_and_filtering")
+                
+                # Execute Web Fallback if confidence is low, no chunks, or agent flagged it
+                if web_search_fallback and not retrieved_chunks:
+                    status.update(label="Confidence low. Triggering Web Search Fallback...", state="running")
+                    telemetry.start_span("web_fallback")
+                    web_hits = st.session_state.rag_engine.web_search.search(prompt, num_results=4)
+                    for hit in web_hits:
+                        retrieved_chunks.append((hit, 0.90))
+                    telemetry.end_span("web_fallback")
+                    
+                status.update(label="Context query complete.", state="complete")
+                
+            # 3. Response Generation Phase
+            with st.spinner("🤖 Formulating grounded response..."):
+                telemetry.start_span("llm_response_generation")
+                
+                history_tuples = [(msg["role"], msg["content"]) for msg in st.session_state.memory.messages[:-1]]
             
             answer = st.session_state.rag_engine.generate_answer(
-                query=expanded_query,
+                query=prompt,
                 context_chunks=retrieved_chunks,
                 chat_history=history_tuples
             )

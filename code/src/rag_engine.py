@@ -18,6 +18,7 @@ from src.core.guardrails import GuardrailsManager
 from src.core.cache import RAGCache
 from src.core.multimodal import MultiDocumentParser
 from src.core.services.summarization_service import SummarizationService
+from src.retrieval.query_router import QueryRouter
 from src.core.observability import telemetry, Logger
 
 logger = Logger("rag_engine")
@@ -57,6 +58,7 @@ class RAGEngine:
         self.web_search = WebSearchClient()
         self.cache = RAGCache()
         self.summarizer = SummarizationService(self._call_free_llm)
+        self.router = QueryRouter(self._call_free_llm, self.storage, self.get_embedding, self.retriever)
         
         # Load any existing database records into local lists for legacy compatibility
         self.sync_local_lists()
@@ -409,9 +411,13 @@ User Query: {query}
                 chat_history_str += f"{speaker}: {text}\n"
 
         system_prompt = (
-            "You are RetrievalGPT, an intelligent RAG assistant. Answer the user's question accurately using ONLY "
-            "the provided Source Documents. If the documents do not contain the answer, tell the user that the "
-            "information is not present in the uploaded files. You must cite your sources in the text using bracket footnotes like [1] or [2]."
+            "You are a Staff AI Research Assistant. Answer the user's question accurately using ONLY "
+            "the provided Source Documents. Write fluent, highly professional, human-readable answers. "
+            "DO NOT under any circumstances mention RAG implementation details, 'retrieved chunks', "
+            "'snippets', or 'the files provided'. If the source documents do not contain the answer, "
+            "state that explicitly. Format citations clearly at the end of the text like:\n"
+            "Source: [document_name]\n"
+            "Page: [page_number]"
         )
 
         prompt = f"""Source Documents:
@@ -433,10 +439,10 @@ Answer:"""
         if "Demo Fallback" in provider:
             mock_ans = (
                 f"**[DEMO MODE: Offline & No API keys configured]**\n\n"
-                f"Based on your query *'{query}'*, I parsed the matching document snippets:\n\n"
+                f"The system processed your request locally. The matched source document segments indicate:\n\n"
             )
             for idx, (chunk, score) in enumerate(context_chunks):
-                mock_ans += f"- **From {chunk['source']}** (relevance: {score:.2f}):\n  \"{chunk['text'][:160]}...\"\n\n"
+                mock_ans += f"- **{chunk['source']}** (Page {chunk.get('page', 1)}):\n  \"{chunk['text'][:160]}...\"\n\n"
             return mock_ans
             
         # Run Hallucination groundedness check
