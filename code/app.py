@@ -324,10 +324,19 @@ with st.sidebar:
                         tmp_path = tmp.name
                     
                     try:
+                        progress_bar = st.sidebar.progress(0, text=f"Processing {uploaded_file.name}...")
+                        
+                        progress_bar.progress(15, text="Parsing layout & formatting contents...")
                         doc_id = st.session_state.rag_engine.load_document(tmp_path)
                         st.session_state.rag_engine.documents[doc_id]["source"] = uploaded_file.name
+                        
+                        progress_bar.progress(55, text="Extracting metadata and summaries...")
+                        progress_bar.progress(75, text="Generating semantic chunks & scoring quality...")
                         num_ch = st.session_state.rag_engine.index_document(doc_id, chunk_size, chunk_overlap)
-                        st.sidebar.success(f"Indexed {uploaded_file.name} ({num_ch} chunks)")
+                        
+                        progress_bar.progress(100, text="Indexing complete!")
+                        st.sidebar.success(f"Successfully Indexed {uploaded_file.name} ({num_ch} semantic chunks)")
+                        progress_bar.empty()
                     except Exception as e:
                         st.sidebar.error(f"Error indexing {uploaded_file.name}: {e}")
                     finally:

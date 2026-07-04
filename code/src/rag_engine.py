@@ -19,6 +19,7 @@ from src.core.cache import RAGCache
 from src.core.multimodal import MultiDocumentParser
 from src.core.services.summarization_service import SummarizationService
 from src.retrieval.query_router import QueryRouter
+from src.core.services.ingestion_service import DocumentIntelligencePipeline
 from src.core.observability import telemetry, Logger
 
 logger = Logger("rag_engine")
@@ -59,6 +60,7 @@ class RAGEngine:
         self.cache = RAGCache()
         self.summarizer = SummarizationService(self._call_free_llm)
         self.router = QueryRouter(self._call_free_llm, self.storage, self.get_embedding, self.retriever)
+        self.ingestion_pipeline = DocumentIntelligencePipeline()
         
         # Load any existing database records into local lists for legacy compatibility
         self.sync_local_lists()
@@ -122,50 +124,39 @@ class RAGEngine:
         return np.array([self.get_embedding(t) for t in texts])
 
     def load_document(self, file_path: str) -> int:
-        """Load document, perform duplicate checking, and extract metadata."""
+        """Load document using DocumentIntelligencePipeline, check duplicates, extract metadata."""
         if not os.path.exists(file_path):
             raise FileNotFoundError(f"File not found: {file_path}")
             
         file_name = os.path.basename(file_path)
         doc_hash = MultiDocumentParser.get_file_hash(file_path)
         
-        # Duplicate detection check
+        # Duplicate detection check at document-level hash
         for doc in self.documents:
             if doc.get("hash") == doc_hash:
                 logger.info("Duplicate document detected, bypassing ingestion", file=file_name)
                 return doc["id"]
                 
-        ext = file_path.lower()
-        content = ""
-        # Route to appropriate parser
-        if ext.endswith(".pdf"):
-            pages = MultiDocumentParser.parse_pdf(file_path)
-            content = "\n".join([p[0] for p in pages])
-        elif ext.endswith(".docx"):
-            pages = MultiDocumentParser.parse_docx(file_path)
-            content = "\n".join([p[0] for p in pages])
-        elif ext.endswith((".png", ".jpg", ".jpeg", ".tiff", ".bmp")):
-            content = MultiDocumentParser.parse_image_ocr(file_path)
-        elif ext.endswith((".txt", ".md", ".json", ".html")):
-            pages = MultiDocumentParser.parse_text_or_markdown(file_path)
-            content = "\n".join([p[0] for p in pages])
-        else:
-            raise ValueError(f"Unsupported file format for: {file_name}")
-            
+        # Parse document structure via DocumentIntelligencePipeline
+        pages = self.ingestion_pipeline.parse_document(file_path)
+        content = "\n".join([p["text"] for p in pages])
+        
         doc_id = len(self.documents)
-        meta = MultiDocumentParser.extract_metadata(file_path, content)
+        # Extract metadata
+        meta = self.ingestion_pipeline.generate_doc_summary_metadata(content, file_name, self._call_free_llm)
         
         self.documents.append({
             "id": doc_id,
             "source": file_name,
             "text": content,
             "hash": doc_hash,
-            "metadata": meta
+            "metadata": meta,
+            "pages_data": pages
         })
         return doc_id
 
     def chunk_text(self, text: str, chunk_size=400, chunk_overlap=80) -> list:
-        """Split text into manageable chunks with overlap."""
+        """Split text into manageable chunks with overlap (retained for backward compatibility)."""
         text = re.sub(r'\s+', ' ', text)
         words = text.split()
         
@@ -182,37 +173,50 @@ class RAGEngine:
         return chunks
 
     def index_document(self, doc_id: int, chunk_size=400, chunk_overlap=80) -> int:
-        """Index a loaded document using SemanticChunker, score quality, and save to storage."""
-        from src.core.splitter import SemanticChunker
+        """Index a loaded document semantically, filter duplicate chunks, and save to storage."""
         doc = self.documents[doc_id]
+        pages_data = doc.get("pages_data", [])
         
-        # Initialize Semantic Chunker with RAGEngine batch embedding function
-        chunker = SemanticChunker(embed_fn=self.get_embeddings_batch)
-        raw_chunks = chunker.split_text(doc["text"])
-        
-        indexed_chunks = []
-        for idx, text in enumerate(raw_chunks):
-            embedding = self.get_embedding(text)
-            # Fetch pre-indexed quality score
-            quality_score = self.router.filter.get_quality_score(text)
+        if not pages_data:
+            pages_data = [{
+                "text": doc["text"],
+                "page": 1,
+                "chapter": "Overview",
+                "heading": "Start",
+                "section": "Main"
+            }]
             
-            chunk_info = {
-                "id": len(self.chunks) + idx,
-                "doc_id": doc_id,
-                "source": doc["source"],
-                "text": text,
-                "embedding": embedding,
-                "page": (idx // 3) + 1,  # Page estimation
-                "quality_score": quality_score
-            }
+        # Semantic chunking
+        raw_chunks = self.ingestion_pipeline.chunk_document_semantically(
+            parsed_pages=pages_data,
+            doc_id=doc_id,
+            filename=doc["source"],
+            embed_fn=self.get_embeddings_batch
+        )
+        
+        # Get existing chunk hashes to verify and avoid duplicate indexing
+        existing_chunks = self.storage.get_all_chunks()
+        existing_hashes = {c.get("text_hash") for c in existing_chunks if c.get("text_hash")}
+        
+        # Deduplicate at chunk text level
+        filtered_chunks = self.ingestion_pipeline.deduplicate_chunks(raw_chunks, existing_hashes)
+        
+        # Embed and map to database structures
+        indexed_chunks = []
+        for idx, chunk in enumerate(filtered_chunks):
+            embedding = self.get_embedding(chunk["text"])
+            chunk_info = chunk.copy()
+            # Map chunk fields for backward compatibility
+            chunk_info["embedding"] = embedding
+            chunk_info["doc_id"] = doc_id
+            chunk_info["id"] = len(self.chunks) + idx
             indexed_chunks.append(chunk_info)
             
-        # Add to storage manager
-        self.storage.add_chunks(indexed_chunks)
-        self.sync_local_lists()
-        
-        # Rebuild BM25 index
-        self.retriever.rebuild_sparse_index()
+        if indexed_chunks:
+            self.storage.add_chunks(indexed_chunks)
+            self.sync_local_lists()
+            self.retriever.rebuild_sparse_index()
+            
         return len(indexed_chunks)
 
     def retrieve(self, query: str, top_k=3) -> list:
