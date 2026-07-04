@@ -512,16 +512,26 @@ with side_col:
     
     # Grounded Citations list
     st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
-    st.markdown("#### 🔍 Highlighted Citations")
+    st.markdown("#### 🔍 Grounded Sources")
     if st.session_state.citations_list:
-        for cite in st.session_state.citations_list:
-            st.markdown(f"""
-            <div class='cite-side-card'>
-                <strong>[{cite['index']}] {cite['source']}</strong> (Page {cite['page']})<br/>
-                <span style='font-size: 0.8rem; color: #a5b4fc;'>Confidence: {cite['confidence_score']:.2f}</span><br/>
-                <span style='font-size: 0.82rem; color: #94a3b8; font-style: italic;'>"{cite['snippet']}"</span>
-            </div>
-            """, unsafe_allow_html=True)
+        from src.core.citation import CitationEngine
+        grouped = CitationEngine.group_citations_by_document(st.session_state.citations_list)
+        for doc_name, items in grouped.items():
+            st.markdown(f"**📄 {doc_name}**")
+            for cite in items:
+                with st.expander(f"[{cite['index']}] Page {cite['page']} - {cite['chapter']} ({cite['confidence_score']:.2f})"):
+                    st.markdown("**Highlighted Evidence:**")
+                    st.info(cite['highlighted_text'])
+                    
+                    st.markdown("**Context Snippet:**")
+                    st.caption(cite['snippet'])
+                    
+                    st.markdown("**Metadata Metrics:**")
+                    st.caption(
+                        f"Chunk ID: `{cite['chunk_id']}` | "
+                        f"RRF Score: `{cite['retrieval_score']}` | "
+                        f"Reranking Score: `{cite['reranking_score']}`"
+                    )
     else:
         st.info("No active citations. Ask a query to display source references.")
     st.markdown("</div>", unsafe_allow_html=True)
