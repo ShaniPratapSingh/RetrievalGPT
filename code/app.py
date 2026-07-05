@@ -297,6 +297,17 @@ with st.sidebar:
         if selected_section:
             active_filters["section"] = selected_section
 
+    # Knowledge Connectors sidebar section
+    st.markdown("### 🔌 Knowledge Connectors")
+    with st.expander("Manage Enterprise Connectors", expanded=False):
+        st.markdown("**Connected Sources:**")
+        st.success("✔ GitHub repository (`mock/repo`)")
+        st.success("✔ SQLite database schema (`:memory:`)")
+        
+        # Connect option toggles
+        st.toggle("Enable GitHub search connector", value=True)
+        st.toggle("Enable Database SQL schema tool", value=True)
+
     # Document uploader (supports PDF, DOCX, TXT, Markdown, HTML, Images)
     st.markdown("### 📁 Document Store")
     uploaded_files = st.file_uploader(
