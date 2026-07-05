@@ -330,6 +330,7 @@ with st.sidebar:
                         continue
                         
                     suffix = os.path.splitext(uploaded_file.name)[1]
+                    uploaded_file.seek(0)
                     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
                         tmp.write(uploaded_file.read())
                         tmp_path = tmp.name

@@ -7,6 +7,10 @@ logger = Logger("storage")
 
 class StorageManager:
     def __init__(self, db_dir: str = "chroma_db"):
+        import sys
+        is_testing = os.getenv("TESTING", "false").lower() == "true" or "unittest" in sys.modules or "pytest" in sys.modules
+        if is_testing:
+            db_dir = "chroma_db_test"
         self.db_dir = os.path.abspath(db_dir)
         os.makedirs(self.db_dir, exist_ok=True)
         
