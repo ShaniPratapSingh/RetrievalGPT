@@ -31,8 +31,15 @@ class AgentOrchestrator:
             context = verification_agent.run(context)
             
             # 5. Web Search Fallback check
-            # Trigger if retrieved chunks empty or plan explicitly requires web search
-            if not context.retrieved_chunks or context.plan.get("web_search_necessity", False):
+            # Trigger ONLY if no uploaded documents exist, OR query explicitly asks for web search
+            ret_agent = self.registry.get("retrieval_agent")
+            has_uploaded_docs = False
+            if hasattr(ret_agent, "metadata_retriever"):
+                has_uploaded_docs = len(ret_agent.metadata_retriever.storage.get_all_chunks()) > 0
+                
+            user_wants_web = any(w in context.query.lower() for w in ["google", "web search", "internet", "online", "tavily", "serper"])
+            
+            if (not has_uploaded_docs or user_wants_web) and (not context.retrieved_chunks or context.plan.get("web_search_necessity", False)):
                 try:
                     web_agent = self.registry.get("web_agent")
                     context = web_agent.run(context)

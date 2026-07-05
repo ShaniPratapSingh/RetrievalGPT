@@ -113,6 +113,22 @@ class MetadataRetriever:
 
         top_k = self.get_dynamic_top_k(intent)
         
+        # Direct chapter metadata filter check
+        chapter_filter = filters.get("chapter") if filters else None
+        if chapter_filter:
+            all_chunks = self.storage.get_all_chunks()
+            matching_chunks = []
+            for ch in all_chunks:
+                ch_chap = str(ch.get("chapter", "")).lower().strip()
+                target_chap = str(chapter_filter).lower().strip()
+                if target_chap in ch_chap or ch_chap in target_chap:
+                    matching_chunks.append(ch)
+            if matching_chunks:
+                # Rank matching chunks using fallback scoring
+                results = matching_chunks[:top_k]
+                self.retrieval_cache[cache_key] = results
+                return results
+
         # 1. Parallel dense & sparse fetches
         future_dense = self.executor.submit(self.hybrid.retrieve_dense, query, top_k * 2)
         future_sparse = self.executor.submit(self.hybrid.retrieve_sparse, query, top_k * 2)

@@ -1,3 +1,4 @@
+import re
 from src.orchestrator.context import AgentContext
 from src.retrieval.metadata_retriever import MetadataRetriever
 from src.tools.tool_registry import ToolRegistry
@@ -36,6 +37,14 @@ class RetrievalAgent:
         top_k = context.plan.get("top_k", 5)
         strategy = context.plan.get("retrieval_strategy", "hybrid")
         
+        # Parse chapter references dynamically
+        query_lower = context.rewritten_query.lower()
+        if "chapter" in query_lower:
+            match = re.search(r'chapter\s*(\d+|one|two|three|four|five|six|seven|eight|nine|ten)', query_lower)
+            if match:
+                ch_val = match.group(1).strip()
+                context.filters["chapter"] = f"chapter {ch_val}"
+
         dense_hits = []
         sparse_hits = []
         

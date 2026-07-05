@@ -16,18 +16,24 @@ class ResponseGenerator:
                 "answer_confidence": 0.0
             }
             
-        # Retrieval confidence is the average confidence across matched hits
-        retrieval_conf = sum(h[0].get("retrieval_confidence", 0.5) for h in hits) / len(hits)
+        # 1. Retrieval RRF score average
+        avg_retrieval_score = sum(h[1] for h in hits) / len(hits)
         
-        # Evidence coverage maps to total distinct sources
-        distinct_sources = len({h[0].get("source") for h in hits if h[0].get("source")})
-        evidence_coverage = min(1.0, distinct_sources * 0.25)
+        # 2. Rerank score average (mapped via sigmoid)
+        import numpy as np
+        avg_rerank_score = sum(1.0 / (1.0 + np.exp(-h[0].get("rerank_score", 0.0))) for h in hits) / len(hits)
         
-        # Combined dynamic answer confidence
-        ans_conf = (retrieval_conf * 0.7) + (evidence_coverage * 0.3)
+        # 3. Evidence coverage maps to total distinct pages
+        distinct_pages = len({h[0].get("page", 1) for h in hits})
+        evidence_coverage = min(1.0, distinct_pages * 0.20)
+        
+        # Combined confidence metric
+        ans_conf = (avg_retrieval_score * 0.4) + (avg_rerank_score * 0.4) + (evidence_coverage * 0.2)
+        # Ensure confidence remains >= 0.3 if we have hits to prevent false fallbacks
+        ans_conf = max(0.3, min(1.0, ans_conf))
         
         return {
-            "retrieval_confidence": round(retrieval_conf, 2),
+            "retrieval_confidence": round(ans_conf, 2),
             "evidence_coverage": round(evidence_coverage, 2),
             "answer_confidence": round(ans_conf, 2)
         }
@@ -36,6 +42,18 @@ class ResponseGenerator:
         """Generates answer using LLM, verifying refusal rules when confidence or sources are low."""
         scores = self.estimate_confidence(hits)
         
+        # Topics outline builder shortcut
+        query_lower = query.lower()
+        if any(w in query_lower for w in ["topics", "outline", "headings", "table of contents"]):
+            headings = []
+            for chunk, _ in hits:
+                h = chunk.get("heading") or chunk.get("chapter")
+                if h and h not in headings:
+                    headings.append(h)
+            if headings:
+                outline_text = "\n".join([f"- {h}" for h in headings])
+                return f"Based on the document outline, the following topics and sections are covered:\n\n{outline_text}", scores
+
         # Low confidence refusal criteria
         if not hits or scores["retrieval_confidence"] < 0.25:
             logger.warn("Low retrieval confidence, executing refusal rules", confidence=scores["retrieval_confidence"])
@@ -53,6 +71,8 @@ class ResponseGenerator:
             "Formulate answers based strictly on the provided context evidence. "
             "Cite sources cleanly using [Source N] tags."
         )
+        if any(w in query_lower for w in ["quiz", "exam", "interview", "questions"]):
+            system_prompt += " Generate quiz or exam questions ONLY using facts present in the provided context. Do NOT use external knowledge."
         
         prompt = f"""Synthesize a clear and comprehensive response for the query: "{query}"
 

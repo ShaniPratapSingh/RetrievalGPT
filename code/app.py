@@ -455,12 +455,16 @@ with main_col:
             # 2. Standard QA Retrieval Phase
             with st.status(f"🔍 Searching Context (Intent: {intent})") as status:
                 telemetry.start_span("retrieval_and_filtering")
-                final_chunks = routed["data"]
-                retrieved_chunks = [(c, c.get("rrf_score", 1.0)) for c in final_chunks]
+                # Invoke the complete Multi-Agent Orchestrator pipeline
+                retrieved_chunks = st.session_state.rag_engine.retrieve(prompt, filters=active_filters)
                 telemetry.end_span("retrieval_and_filtering")
                 
                 # Execute Web Fallback if confidence is low, no chunks, or agent flagged it
-                if web_search_fallback and not retrieved_chunks:
+                # ONLY if no uploaded documents exist, OR query explicitly asks for web search
+                has_docs = len(st.session_state.rag_engine.documents) > 0
+                user_wants_web = any(w in prompt.lower() for w in ["google", "web search", "internet", "online"])
+                
+                if (not has_docs or user_wants_web) and not retrieved_chunks:
                     status.update(label="Confidence low. Triggering Web Search Fallback...", state="running")
                     telemetry.start_span("web_fallback")
                     web_hits = st.session_state.rag_engine.web_search.search(prompt, num_results=4)
