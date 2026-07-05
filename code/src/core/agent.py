@@ -84,7 +84,7 @@ Example output format:
             provider, response_text = self.call_llm(prompt, system_prompt)
             telemetry.record_provider(provider)
             
-            if "Demo Fallback" in provider:
+            if provider in ["Test Fallback (Mock)", "Demo Fallback (Mock)"]:
                 # LLM is mock, fall back to rule-based analysis
                 res = self.analyze_query_local(query)
                 telemetry.end_span("agent_query_analysis")

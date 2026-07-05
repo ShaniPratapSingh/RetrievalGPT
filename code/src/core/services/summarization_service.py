@@ -69,10 +69,10 @@ Summary:"""
             try:
                 provider, summary_text = self.call_llm(prompt, system_prompt)
                 telemetry.record_provider(provider)
-                if summary_text and "DEMO MODE" not in summary_text:
+                if summary_text and provider not in ["Test Fallback (Mock)", "Demo Fallback (Mock)"]:
                     summaries.append(summary_text.strip())
                 else:
-                    # Fallback simulation summary if LLM offline
+                    # Fallback simulation summary if LLM offline/test
                     summaries.append(f"[Section {idx+1} Summary]: {chunk[:150]}...")
             except Exception as e:
                 logger.error("Failed to summarize chunk", idx=idx, error=str(e))
@@ -113,7 +113,7 @@ Final Unified Summary:"""
             provider, final_text = self.call_llm(prompt, system_prompt)
             telemetry.record_provider(provider)
             
-            if "Demo Fallback" in provider:
+            if provider in ["Test Fallback (Mock)", "Demo Fallback (Mock)"]:
                 # Local mock summary generation
                 mock_sum = f"### [SUMMARY WORKSPACE: {mode.upper()} MODE]\n\n"
                 if mode == "bullet":

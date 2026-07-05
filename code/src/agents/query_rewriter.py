@@ -33,7 +33,7 @@ Output JSON format:
 """
         try:
             provider, response_text = self.call_llm(prompt, system_prompt)
-            if "Demo Fallback" in provider:
+            if provider in ["Test Fallback (Mock)", "Demo Fallback (Mock)"]:
                 return query
                 
             ans_match = re.search(r'<answer>(.*?)(</answer>|$)', response_text, re.DOTALL)

@@ -66,7 +66,7 @@ Output format:
             provider, response_text = self.call_llm(prompt, system_prompt)
             telemetry.record_provider(provider)
             
-            if "Demo Fallback" in provider:
+            if provider in ["Test Fallback (Mock)", "Demo Fallback (Mock)"]:
                 # Local mock fallback
                 top_c = conceptual_chunks[0]
                 text = top_c["text"]

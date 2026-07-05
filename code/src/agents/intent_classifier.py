@@ -70,7 +70,7 @@ Output JSON format:
 """
         try:
             provider, response_text = self.call_llm(prompt, system_prompt)
-            if "Demo Fallback" in provider:
+            if provider in ["Test Fallback (Mock)", "Demo Fallback (Mock)"]:
                 intent = self.classify_locally(query)
                 return {"intent": intent, "summary_mode": "short", "explanation": "Fallback local classification"}
                 

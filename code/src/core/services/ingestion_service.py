@@ -196,7 +196,7 @@ Output JSON format:
         try:
             provider, response_text = call_llm_fn(prompt, system_prompt)
             
-            if "Demo Fallback" in provider:
+            if provider in ["Test Fallback (Mock)", "Demo Fallback (Mock)"]:
                 return {
                     "summary": f"A technical document describing details of {filename}.",
                     "topics": ["Data Processing", "Technical Reference"],
