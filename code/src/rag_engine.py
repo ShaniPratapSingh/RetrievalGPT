@@ -75,6 +75,33 @@ class RAGEngine:
         self.context_compressor = ContextCompressor()
         self.response_generator = ResponseGenerator(self._call_free_llm)
         
+        # Multi-Agent Registry and Orchestration Layer
+        from src.orchestrator.registry import AgentRegistry
+        from src.orchestrator.orchestrator import AgentOrchestrator
+        from src.agents.query_agent import QueryUnderstandingAgent
+        from src.agents.planner_agent import PlanningAgent
+        from src.agents.retrieval_agent import RetrievalAgent
+        from src.agents.summarization_agent import SummarizationAgent
+        from src.agents.comparison_agent import ComparisonAgent
+        from src.agents.citation_agent import CitationAgent
+        from src.agents.verification_agent import VerificationAgent
+        from src.agents.web_agent import WebSearchAgent
+        from src.agents.response_agent import ResponseGenerationAgent
+        
+        self.agent_registry = AgentRegistry()
+        self.agent_registry.register("query_agent", QueryUnderstandingAgent(self._call_free_llm))
+        self.agent_registry.register("planner_agent", PlanningAgent())
+        self.agent_registry.register("retrieval_agent", RetrievalAgent(self.retriever, self.storage, self.get_embedding))
+        self.agent_registry.register("summarization_agent", SummarizationAgent(self._call_free_llm))
+        self.agent_registry.register("comparison_agent", ComparisonAgent(self._call_free_llm))
+        self.agent_registry.register("citation_agent", CitationAgent())
+        self.agent_registry.register("verification_agent", VerificationAgent(self._call_free_llm))
+        self.agent_registry.register("web_agent", WebSearchAgent())
+        self.agent_registry.register("response_agent", ResponseGenerationAgent(self._call_free_llm))
+        
+        self.orchestrator = AgentOrchestrator(self.agent_registry)
+        self.last_context = None
+        
         # Load any existing database records into local lists for legacy compatibility
         self.sync_local_lists()
         self.retriever.rebuild_sparse_index()
@@ -234,48 +261,21 @@ class RAGEngine:
 
     def retrieve(self, query: str, top_k=None, filters=None) -> list:
         """Agentic Retrieval Workflow: Classifies intent, rewrites, plans, retrieves, and compresses."""
-        # 1. Classify Intent
-        classification = self.intent_classifier.classify(query)
-        intent = classification["intent"]
+        # Create context
+        from src.orchestrator.context import AgentContext
+        context = AgentContext(query, filters=filters)
         
-        # 2. Rewrite Query
-        rewritten_query = self.query_rewriter.rewrite(query)
+        # Run Orchestrator workflow pipeline execution
+        self.orchestrator.execute(context)
+        self.last_context = context
         
-        # 3. Create plan
-        plan = self.query_planner.create_plan(intent, rewritten_query, filters)
-        
-        # Execute plan retrieval parameters
-        top_k = top_k or plan["top_k"]
-        dense_hits = []
-        sparse_hits = []
-        
-        if plan["retrieval_strategy"] in ["dense", "hybrid"]:
-            dense_hits = self.retriever.retrieve_dense(rewritten_query, top_k=top_k * 2)
-        if plan["retrieval_strategy"] in ["sparse", "hybrid"]:
-            sparse_hits = self.retriever.retrieve_sparse(rewritten_query, top_k=top_k * 2)
-            
-        # Reciprocal Rank Fusion
-        rrf_hits = self.retriever.reciprocal_rank_fusion(dense_hits, sparse_hits)
-        
-        # Re-rank via Cross-Encoder
-        reranked_hits = self.retriever.rerank_results(rewritten_query, rrf_hits, top_n=plan["reranking_depth"])
-        
-        # Compress
-        compressed_hits = self.context_compressor.compress(reranked_hits)
-        
-        # Limit to target top_k
-        final_hits = compressed_hits[:top_k]
-        
-        # Estimate Confidence
-        scores = self.response_generator.estimate_confidence(final_hits)
-        
-        # Map to legacy [(chunk, score)] format
+        # Format results matching legacy [(chunk_dict, score)] format
         legacy_format = []
-        for chunk, score in final_hits:
+        for chunk, score in context.retrieved_chunks:
             chunk_copy = chunk.copy()
-            chunk_copy["retrieval_confidence"] = scores["retrieval_confidence"]
-            chunk_copy["evidence_coverage"] = scores["evidence_coverage"]
-            chunk_copy["answer_confidence"] = scores["answer_confidence"]
+            chunk_copy["retrieval_confidence"] = context.confidence_metrics["retrieval_confidence"]
+            chunk_copy["evidence_coverage"] = context.confidence_metrics["evidence_coverage"]
+            chunk_copy["answer_confidence"] = context.confidence_metrics["answer_confidence"]
             legacy_format.append((chunk_copy, score))
             
         return legacy_format
@@ -471,7 +471,14 @@ User Query: {query}
         return thought or "Thinking complete.", query
 
     def generate_answer(self, query: str, context_chunks: list, chat_history=None, ollama_url=None, ollama_model=None) -> str:
-        """Generate final response using ResponseGenerator agent, with hallucination checks & web fallback."""
+        """Generate final response using orchestrator results or ResponseGenerator agent fallback."""
+        # If we have a cached orchestrated context matching the current query, serve its answer
+        if hasattr(self, "last_context") and self.last_context and self.last_context.query == query:
+            if self.last_context.final_answer:
+                scores = self.last_context.confidence_metrics
+                footer = f"\n\n*— Generated response (Retrieval Confidence: {scores.get('retrieval_confidence', 0.5)})*"
+                return f"{self.last_context.final_answer}{footer}"
+
         query = self.guardrails.sanitize_input(query)
         is_inj, msg = self.guardrails.detect_prompt_injection(query)
         if is_inj:
