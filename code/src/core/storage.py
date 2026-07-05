@@ -50,10 +50,15 @@ class StorageManager:
             metadatas = []
             for c in chunks:
                 meta = {
-                    "doc_id": c.get("doc_id", 0),
-                    "source": c.get("source", "unknown"),
+                    "doc_id": c.get("doc_id", c.get("document_id", 0)),
+                    "source": c.get("source", c.get("filename", "unknown")),
                     "chunk_idx": c.get("id", 0),
-                    "page": c.get("page", 1)
+                    "page": c.get("page", 1),
+                    "chapter": str(c.get("chapter", "Overview")),
+                    "heading": str(c.get("heading", "Start")),
+                    "section": str(c.get("section", "Main")),
+                    "text_hash": str(c.get("text_hash", "")),
+                    "quality_score": float(c.get("quality_score", 0.5))
                 }
                 metadatas.append(meta)
                 
@@ -89,7 +94,12 @@ class StorageManager:
                             "source": meta.get("source", "unknown"),
                             "text": results["documents"][i],
                             "embedding": results["embeddings"][i] if results.get("embeddings") is not None else None,
-                            "page": meta.get("page", 1)
+                            "page": meta.get("page", 1),
+                            "chapter": meta.get("chapter", "Overview"),
+                            "heading": meta.get("heading", "Start"),
+                            "section": meta.get("section", "Main"),
+                            "text_hash": meta.get("text_hash", ""),
+                            "quality_score": meta.get("quality_score", 0.5)
                         })
                 return chunks
             except Exception as e:
@@ -123,7 +133,12 @@ class StorageManager:
                                 "doc_id": meta.get("doc_id", 0),
                                 "source": meta.get("source", "unknown"),
                                 "text": results["documents"][0][idx],
-                                "page": meta.get("page", 1)
+                                "page": meta.get("page", 1),
+                                "chapter": meta.get("chapter", "Overview"),
+                                "heading": meta.get("heading", "Start"),
+                                "section": meta.get("section", "Main"),
+                                "text_hash": meta.get("text_hash", ""),
+                                "quality_score": meta.get("quality_score", 0.5)
                             },
                             "score": float(similarity)
                         })

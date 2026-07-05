@@ -108,22 +108,52 @@ class RAGEngine:
         self.retriever.rebuild_sparse_index()
 
     def sync_local_lists(self):
-        """Sync core local list structures with ChromaDB for backward compatibility."""
+        """Sync core local list structures with ChromaDB for backward compatibility, reconstructing pages_data."""
         all_ch = self.storage.get_all_chunks()
+        # Sort chunks by database ID to ensure text pieces merge in correct sequential order
+        all_ch.sort(key=lambda x: x.get("id", 0))
         self.chunks = all_ch
         
-        # Deduplicate docs from chunks
-        seen_doc_ids = set()
-        self.documents = []
+        # Group chunks by doc_id
+        from collections import defaultdict
+        doc_chunks = defaultdict(list)
         for ch in all_ch:
-            doc_id = ch["doc_id"]
-            if doc_id not in seen_doc_ids:
-                seen_doc_ids.add(doc_id)
-                self.documents.append({
-                    "id": doc_id,
-                    "source": ch["source"],
-                    "text": ""  # Lazy loaded/aggregated
+            doc_chunks[ch.get("doc_id")].append(ch)
+            
+        self.documents = []
+        for doc_id, chs in doc_chunks.items():
+            # Reconstruct pages_data
+            pages_map = defaultdict(list)
+            for ch in chs:
+                page_num = ch.get("page", 1)
+                pages_map[page_num].append(ch)
+                
+            pages_data = []
+            full_text_parts = []
+            for page_num in sorted(pages_map.keys()):
+                page_chs = pages_map[page_num]
+                page_text = "\n".join([ch.get("text", "") for ch in page_chs])
+                full_text_parts.append(page_text)
+                
+                # Retrieve first chunk properties for metadata representation
+                first_ch = page_chs[0]
+                pages_data.append({
+                    "text": page_text,
+                    "page": page_num,
+                    "chapter": first_ch.get("chapter", "Overview"),
+                    "heading": first_ch.get("heading", "Start"),
+                    "section": first_ch.get("section", "Main")
                 })
+                
+            first_doc_ch = chs[0]
+            self.documents.append({
+                "id": doc_id,
+                "source": first_doc_ch.get("source"),
+                "text": "\n".join(full_text_parts),
+                "hash": first_doc_ch.get("text_hash"),
+                "metadata": first_doc_ch.get("metadata", {}),
+                "pages_data": pages_data
+            })
 
     def get_embedding(self, text: str) -> list:
         """Generate open-source embedding for a given text locally (with caching)."""
@@ -270,6 +300,15 @@ class RAGEngine:
         self.orchestrator.execute(context)
         self.last_context = context
         
+        # Calculate retrieval confidence score and stamp it onto matched chunks
+        retrieved_count = len(context.retrieved_chunks)
+        retrieved_pages = [c[0].get("page", 1) for c in context.retrieved_chunks]
+        retrieved_scores = [c[1] for c in context.retrieved_chunks]
+        reranked_scores = [c[0].get("rerank_score", 0.0) for c in context.retrieved_chunks]
+        
+        # Fallback Decision
+        fallback_decision = "Web Search Fallback" if context.web_search_fallback else "Local Context Only"
+        
         # Format results matching legacy [(chunk_dict, score)] format
         legacy_format = []
         for chunk, score in context.retrieved_chunks:
@@ -279,6 +318,18 @@ class RAGEngine:
             chunk_copy["answer_confidence"] = context.confidence_metrics["answer_confidence"]
             legacy_format.append((chunk_copy, score))
             
+        # Standardized debug logger outputs
+        logger.info(
+            "RAG RETRIEVAL DEBUG REPORT",
+            document_id=list(set([c[0].get("doc_id", 0) for c in context.retrieved_chunks])),
+            selected_collection=self.storage.collection.name if self.storage.db_enabled else "in-memory",
+            retrieved_chunk_count=retrieved_count,
+            retrieved_pages=retrieved_pages,
+            retrieved_scores=retrieved_scores,
+            reranked_scores=reranked_scores,
+            confidence=context.confidence_metrics.get("retrieval_confidence", 0.5),
+            fallback_decision=fallback_decision
+        )
         return legacy_format
 
     def _call_free_llm(self, prompt: str, system_prompt=None, ollama_url=None, ollama_model=None) -> Tuple[str, str]:
@@ -533,5 +584,36 @@ User Query: {query}
         if not target_doc:
             target_doc = self.documents[-1]
             
+        # Detect if query targets a specific chapter
+        query_text = ""
+        if hasattr(self, "last_context") and self.last_context:
+            query_text = self.last_context.query.lower()
+            
+        target_chapter = None
+        if "chapter" in query_text:
+            match = re.search(r'chapter\s*(\d+|one|two|three|four|five|six|seven|eight|nine|ten|[a-zA-Z]+)', query_text)
+            if match:
+                target_chapter = match.group(1).strip()
+                
+        # If specific chapter is requested, filter target_doc pages
+        filtered_text = ""
+        pages_count = 0
+        if target_chapter and target_doc.get("pages_data"):
+            chapter_pages = []
+            for p in target_doc["pages_data"]:
+                p_chap = str(p.get("chapter", "")).lower()
+                if target_chapter in p_chap or p_chap in target_chapter:
+                    chapter_pages.append(p["text"])
+            if chapter_pages:
+                filtered_text = "\n".join(chapter_pages)
+                pages_count = len(chapter_pages)
+                
+        if filtered_text:
+            res = self.summarizer.summarize_document(filtered_text, target_doc["source"], mode)
+            res["summary_type"] = f"Chapter {target_chapter} Summary"
+            res["pages_processed"] = pages_count
+            return res
+            
+        # Default full document summary fallback
         return self.summarizer.summarize_document(target_doc["text"], target_doc["source"], mode)
 
