@@ -51,9 +51,14 @@ class MetadataRetriever:
                 
                 if k in ["document", "source"]:
                     chunk_val = c.get("source") or c.get("filename")
-                    if str(chunk_val).strip().lower() != str(val).strip().lower():
-                        match = False
-                        break
+                    if isinstance(val, (list, tuple, set)):
+                        if str(chunk_val).strip().lower() not in [str(item).strip().lower() for item in val]:
+                            match = False
+                            break
+                    else:
+                        if str(chunk_val).strip().lower() != str(val).strip().lower():
+                            match = False
+                            break
                 elif k == "document_id":
                     chunk_val = c.get("document_id") or c.get("doc_id")
                     if str(chunk_val).strip() != str(val).strip():
@@ -113,6 +118,23 @@ class MetadataRetriever:
 
         top_k = self.get_dynamic_top_k(intent)
         
+        # Direct page metadata filter check
+        page_filter = filters.get("page") if filters else None
+        if page_filter:
+            try:
+                p_num = int(page_filter)
+                all_chunks = self.storage.get_all_chunks()
+                matching_chunks = []
+                for ch in all_chunks:
+                    if ch.get("page") == p_num:
+                        matching_chunks.append(ch)
+                if matching_chunks:
+                    results = matching_chunks[:top_k]
+                    self.retrieval_cache[cache_key] = results
+                    return results
+            except (ValueError, TypeError):
+                pass
+
         # Direct chapter metadata filter check
         chapter_filter = filters.get("chapter") if filters else None
         if chapter_filter:

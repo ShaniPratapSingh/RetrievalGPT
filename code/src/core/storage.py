@@ -58,7 +58,10 @@ class StorageManager:
                     "heading": str(c.get("heading", "Start")),
                     "section": str(c.get("section", "Main")),
                     "text_hash": str(c.get("text_hash", "")),
-                    "quality_score": float(c.get("quality_score", 0.5))
+                    "quality_score": float(c.get("quality_score", 0.5)),
+                    "document_summary": str(c.get("document_summary", "Document overview")),
+                    "keywords": str(c.get("keywords", "")),
+                    "upload_timestamp": str(c.get("upload_timestamp", ""))
                 }
                 metadatas.append(meta)
                 
@@ -99,7 +102,10 @@ class StorageManager:
                             "heading": meta.get("heading", "Start"),
                             "section": meta.get("section", "Main"),
                             "text_hash": meta.get("text_hash", ""),
-                            "quality_score": meta.get("quality_score", 0.5)
+                            "quality_score": meta.get("quality_score", 0.5),
+                            "document_summary": meta.get("document_summary", "Document overview"),
+                            "keywords": meta.get("keywords", ""),
+                            "upload_timestamp": meta.get("upload_timestamp", "")
                         })
                 return chunks
             except Exception as e:
@@ -138,7 +144,10 @@ class StorageManager:
                                 "heading": meta.get("heading", "Start"),
                                 "section": meta.get("section", "Main"),
                                 "text_hash": meta.get("text_hash", ""),
-                                "quality_score": meta.get("quality_score", 0.5)
+                                "quality_score": meta.get("quality_score", 0.5),
+                                "document_summary": meta.get("document_summary", "Document overview"),
+                                "keywords": meta.get("keywords", ""),
+                                "upload_timestamp": meta.get("upload_timestamp", "")
                             },
                             "score": float(similarity)
                         })

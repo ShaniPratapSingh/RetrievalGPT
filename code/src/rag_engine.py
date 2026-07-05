@@ -273,6 +273,12 @@ class RAGEngine:
         filtered_chunks = self.ingestion_pipeline.deduplicate_chunks(raw_chunks, existing_hashes)
         
         # Embed and map to database structures
+        import time
+        doc_summary = doc.get("metadata", {}).get("summary", "Document overview")
+        keywords_list = doc.get("metadata", {}).get("keywords", [])
+        keywords = ", ".join(keywords_list) if isinstance(keywords_list, list) else str(keywords_list)
+        upload_timestamp = str(time.time())
+
         indexed_chunks = []
         for idx, chunk in enumerate(filtered_chunks):
             embedding = self.get_embedding(chunk["text"])
@@ -281,6 +287,9 @@ class RAGEngine:
             chunk_info["embedding"] = embedding
             chunk_info["doc_id"] = doc_id
             chunk_info["id"] = len(self.chunks) + idx
+            chunk_info["document_summary"] = doc_summary
+            chunk_info["keywords"] = keywords
+            chunk_info["upload_timestamp"] = upload_timestamp
             indexed_chunks.append(chunk_info)
             
         if indexed_chunks:
@@ -527,9 +536,7 @@ User Query: {query}
         # If we have a cached orchestrated context matching the current query, serve its answer
         if hasattr(self, "last_context") and self.last_context and self.last_context.query == query:
             if self.last_context.final_answer:
-                scores = self.last_context.confidence_metrics
-                footer = f"\n\n*— Generated response (Retrieval Confidence: {scores.get('retrieval_confidence', 0.5)})*"
-                return f"{self.last_context.final_answer}{footer}"
+                return self.last_context.final_answer
 
         query = self.guardrails.sanitize_input(query)
         is_inj, msg = self.guardrails.detect_prompt_injection(query)
@@ -557,9 +564,7 @@ User Query: {query}
         # Run Citation grounding engine
         clean_answer, citations = CitationEngine.extract_citations(response_text, chunks_only)
         
-        # Append references to bottom of output for rendering in Streamlit
-        footer = f"\n\n*— Generated response (Retrieval Confidence: {scores.get('retrieval_confidence', 0.5)})*"
-        return f"{clean_answer}{footer}"
+        return clean_answer
 
     def summarize_active_document(self, mode: str = "short", doc_name: str = None) -> dict:
         """Summarize the active document or a document specified by doc_name."""

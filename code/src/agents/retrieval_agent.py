@@ -44,6 +44,13 @@ class RetrievalAgent:
             if match:
                 ch_val = match.group(1).strip()
                 context.filters["chapter"] = f"chapter {ch_val}"
+                
+        # Parse page references dynamically
+        if "page" in query_lower:
+            page_match = re.search(r'page\s*(\d+)', query_lower)
+            if page_match:
+                p_val = int(page_match.group(1).strip())
+                context.filters["page"] = p_val
 
         dense_hits = []
         sparse_hits = []

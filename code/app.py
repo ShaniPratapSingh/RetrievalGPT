@@ -278,15 +278,15 @@ with st.sidebar:
 
     # Metadata Filters
     with st.expander("🔍 Metadata Filters", expanded=False):
-        doc_options = ["All"] + [d["source"] for d in st.session_state.rag_engine.documents]
-        selected_doc = st.selectbox("Filter by Document", options=doc_options)
+        doc_options = [d["source"] for d in st.session_state.rag_engine.documents]
+        selected_docs = st.multiselect("Filter by Document(s)", options=doc_options, default=doc_options)
         selected_page = st.text_input("Filter by Page Number", value="", help="e.g. 5 or Leave blank")
         selected_chapter = st.text_input("Filter by Chapter Name", value="")
         selected_section = st.text_input("Filter by Section Name", value="")
         
         active_filters = {}
-        if selected_doc != "All":
-            active_filters["document"] = selected_doc
+        if selected_docs:
+            active_filters["document"] = selected_docs
         if selected_page:
             try:
                 active_filters["page"] = int(selected_page)
