@@ -12,6 +12,8 @@ except ImportError:
     HAS_REDIS = False
 
 
+from src.core.config import settings
+
 class ConversationalMemory:
     def __init__(self, session_id: str = "default", call_llm_fn = None):
         self.session_id = session_id
@@ -23,8 +25,8 @@ class ConversationalMemory:
         self.redis_client = None
         self.redis_enabled = False
         
-        redis_host = os.getenv("REDIS_HOST")
-        redis_port = int(os.getenv("REDIS_PORT", "6379"))
+        redis_host = settings.REDIS_HOST
+        redis_port = settings.REDIS_PORT
         if HAS_REDIS and redis_host:
             try:
                 logger.info("Connecting to Redis", host=redis_host, port=redis_port)

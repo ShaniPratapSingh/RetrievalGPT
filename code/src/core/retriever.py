@@ -2,6 +2,7 @@ import re
 import os
 import numpy as np
 from typing import List, Dict, Any, Tuple, Optional
+from src.core.config import settings
 from rank_bm25 import BM25Okapi
 from src.core.observability import Logger, telemetry
 
@@ -30,10 +31,10 @@ class HybridRetriever:
         self.reranker_loaded = False
         
         # Configurable RRF parameter (default to standard 60)
-        self.rrf_k = int(os.getenv("RAG_RRF_K", 60))
+        self.rrf_k = settings.RAG_RRF_K
         # Configurable fusion weights: dense weight vs sparse weight
-        self.dense_weight = float(os.getenv("RAG_DENSE_WEIGHT", 1.0))
-        self.sparse_weight = float(os.getenv("RAG_SPARSE_WEIGHT", 1.0))
+        self.dense_weight = settings.RAG_DENSE_WEIGHT
+        self.sparse_weight = settings.RAG_SPARSE_WEIGHT
                 
     def rebuild_sparse_index(self):
         """Fit BM25 on all current chunks from storage."""
@@ -129,7 +130,7 @@ class HybridRetriever:
         if not rrf_results:
             return []
             
-        reranking_enabled = os.getenv("RAG_RERANKING_ENABLED", "false").lower() == "true"
+        reranking_enabled = settings.RAG_RERANKING_ENABLED
         if not reranking_enabled:
             return rrf_results[:top_n]
             

@@ -2,6 +2,7 @@ import os
 import re
 import json
 import time
+from src.core.config import settings
 from typing import Tuple, List, Dict, Any
 import numpy as np
 from dotenv import load_dotenv
@@ -292,11 +293,11 @@ class RAGEngine:
             return "Cached (Local)", cached_val
 
         # Load local keys / overrides
-        ollama_url = ollama_url or os.getenv("OLLAMA_API_URL", "http://localhost:11434")
-        ollama_model = ollama_model or os.getenv("OLLAMA_MODEL", "llama3.1")
-        google_key = os.getenv("GOOGLE_API_KEY")
-        groq_key = os.getenv("GROQ_API_KEY")
-        hf_token = os.getenv("HUGGINGFACEHUB_API_TOKEN")
+        ollama_url = ollama_url or settings.OLLAMA_API_URL
+        ollama_model = ollama_model or settings.OLLAMA_MODEL
+        google_key = settings.GOOGLE_API_KEY
+        groq_key = settings.GROQ_API_KEY
+        hf_token = settings.HUGGINGFACEHUB_API_TOKEN
 
         # 1. Try Ollama (Local)
         try:

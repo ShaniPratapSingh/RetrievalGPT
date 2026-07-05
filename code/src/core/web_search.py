@@ -3,12 +3,14 @@ import requests
 from typing import List, Dict, Any
 from src.core.observability import Logger
 
+from src.core.config import settings
+
 logger = Logger("web_search")
 
 class WebSearchClient:
     def __init__(self):
-        self.tavily_key = os.getenv("TAVILY_API_KEY")
-        self.serper_key = os.getenv("SERPER_API_KEY")
+        self.tavily_key = settings.TAVILY_API_KEY
+        self.serper_key = settings.SERPER_API_KEY
         
         if self.tavily_key:
             logger.info("Web Search Initialized with Tavily")

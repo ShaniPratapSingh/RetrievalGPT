@@ -13,6 +13,8 @@ except ImportError:
     HAS_REDIS = False
 
 
+from src.core.config import settings
+
 class RAGCache:
     def __init__(self, cache_dir: str = "cache"):
         self.cache_dir = os.path.abspath(cache_dir)
@@ -22,8 +24,8 @@ class RAGCache:
         self.redis_client = None
         self.redis_enabled = False
         
-        redis_host = os.getenv("REDIS_HOST")
-        redis_port = int(os.getenv("REDIS_PORT", "6379"))
+        redis_host = settings.REDIS_HOST
+        redis_port = settings.REDIS_PORT
         if HAS_REDIS and redis_host:
             try:
                 self.redis_client = redis.Redis(host=redis_host, port=redis_port, decode_responses=True)
