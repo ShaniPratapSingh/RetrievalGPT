@@ -40,13 +40,7 @@ def check_dependencies():
         missing.append("sentence-transformers")
         print("✗ sentence-transformers is missing (Local embeddings will fall back to hash/mock vectors)")
         
-    # Check openai
-    try:
-        import openai
-        print("✓ openai is installed")
-    except ImportError:
-        missing.append("openai")
-        print("✗ openai is missing")
+
 
     if missing:
         print("\nSome packages are missing. You can install them by running:")

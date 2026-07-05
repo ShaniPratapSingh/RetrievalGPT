@@ -10,7 +10,6 @@ class Settings:
         self.GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
         self.GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
         self.HUGGINGFACEHUB_API_TOKEN = os.getenv("HUGGINGFACEHUB_API_TOKEN", "")
-        self.OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
         
         # Local LLM config
         self.OLLAMA_API_URL = os.getenv("OLLAMA_API_URL", "http://localhost:11434")
@@ -29,10 +28,5 @@ class Settings:
         self.RAG_DENSE_WEIGHT = float(os.getenv("RAG_DENSE_WEIGHT", "1.0"))
         self.RAG_SPARSE_WEIGHT = float(os.getenv("RAG_SPARSE_WEIGHT", "1.0"))
         self.RAG_RERANKING_ENABLED = os.getenv("RAG_RERANKING_ENABLED", "false").lower() == "true"
-        
-        # AWS Keys
-        self.AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID", "")
-        self.AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY", "")
-        self.AWS_DEFAULT_REGION = os.getenv("AWS_DEFAULT_REGION", "us-west-2")
 
 settings = Settings()

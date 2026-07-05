@@ -358,7 +358,6 @@ class RAGEngine:
         google_key = settings.GOOGLE_API_KEY
         groq_key = settings.GROQ_API_KEY
         hf_token = settings.HUGGINGFACEHUB_API_TOKEN
-        openai_key = settings.OPENAI_API_KEY
 
         # 1. Try Ollama (Local)
         try:
@@ -382,33 +381,6 @@ class RAGEngine:
                 return "Ollama (Local)", output
         except Exception:
             pass
-
-        # 1.5 Try OpenAI (Cloud)
-        if openai_key and openai_key != "your_openai_api_key_here" and openai_key.strip():
-            try:
-                url = "https://api.openai.com/v1/chat/completions"
-                messages = []
-                if system_prompt:
-                    messages.append({"role": "system", "content": system_prompt})
-                messages.append({"role": "user", "content": prompt})
-
-                payload = {
-                    "model": "gpt-4o-mini",
-                    "messages": messages,
-                    "temperature": 0.2
-                }
-                headers = {
-                    "Authorization": f"Bearer {openai_key}",
-                    "Content-Type": "application/json"
-                }
-                response = requests.post(url, headers=headers, json=payload, timeout=10)
-                if response.status_code == 200:
-                    result = response.json()
-                    output = result["choices"][0]["message"]["content"]
-                    self.cache.set_completion(cache_key, output)
-                    return "OpenAI (Cloud)", output
-            except Exception:
-                pass
 
         # 2. Try Google Gemini Free Tier
         if google_key and google_key != "your_google_gemini_api_key_here":
@@ -494,7 +466,7 @@ class RAGEngine:
             
         raise ValueError(
             "No valid LLM configuration or credentials found. "
-            "Please configure OPENAI_API_KEY, GOOGLE_API_KEY, GROQ_API_KEY, or run a local Ollama server."
+            "Please configure GOOGLE_API_KEY, GROQ_API_KEY, or run a local Ollama server."
         )
 
     def rewrite_query(self, query: str, ollama_url=None, ollama_model=None) -> Tuple[str, str]:
